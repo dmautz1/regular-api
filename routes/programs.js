@@ -1,80 +1,69 @@
-import express from "express";
-import { getFeedPrograms, getUserPrograms, getProgram, createProgram, editProgram, deleteProgram, subscribeProgram, unsubscribeProgram, getCreatorPrograms, getPersonalProgram } from "../controllers/programs.js";
-import { verifyToken } from "../middleware/auth.js";
-import { validateRequest, createProgramSchema, updateProgramSchema } from "../middleware/validation.js";
+import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import fs from 'fs';
-import { fileURLToPath } from 'url';
-import crypto from 'crypto';
-
-// Get directory path for ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Create program images directory if it doesn't exist
-const programImagesDir = path.join(__dirname, '..', 'public/assets/programs');
-if (!fs.existsSync(programImagesDir)) {
-    fs.mkdirSync(programImagesDir, { recursive: true });
-}
-
-const storage = multer.diskStorage({
-    destination: (req, file, callback) => {
-        // Set destination to programs directory
-        callback(null, 'public/assets/programs');
-    },
-    filename: (req, file, callback) => {
-        // Generate a secure random filename for the uploaded image
-        const randomName = crypto.randomBytes(16).toString('hex');
-        const ext = path.extname(file.originalname).toLowerCase();
-        callback(null, `program-${randomName}${ext}`);
-    },
-});
-
-// Strict file type validation with whitelist
-const fileFilter = (req, file, cb) => {
-    // Whitelist of allowed MIME types for images
-    const allowedMimeTypes = [
-        'image/jpeg', 
-        'image/png', 
-        'image/gif', 
-        'image/webp'
-    ];
-    
-    // Check the file's mimetype against whitelist
-    if (allowedMimeTypes.includes(file.mimetype)) {
-        cb(null, true);
-    } else {
-        cb(new Error('Invalid file type. Only JPEG, PNG, GIF and WebP images are allowed.'), false);
-    }
-};
-
-const upload = multer({ 
-    storage: storage,
-    fileFilter: fileFilter,
-    limits: {
-        fileSize: 5 * 1024 * 1024 // 5MB limit
-    }
-});
+import programsController from '../controllers/programs.js';
+import { validateRequest, createProgramSchema } from '../middleware/validation.js';
+import { verifyToken } from '../middleware/auth.js';
 
 const router = express.Router();
 
+// Configure multer for memory storage (for Supabase uploading)
+const storage = multer.memoryStorage();
+
+// File filter to only allow image files
+const fileFilter = (req, file, cb) => {
+  const allowedFileTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  const maxFileSize = 5 * 1024 * 1024; // 5MB
+  
+  if (!allowedFileTypes.includes(file.mimetype)) {
+    return cb(new Error('Only .jpeg, .jpg, .png, and .webp files are allowed'), false);
+  }
+  
+  if (file.size > maxFileSize) {
+    return cb(new Error('File size exceeds 5MB limit'), false);
+  }
+  
+  cb(null, true);
+};
+
+const upload = multer({ 
+  storage: storage,
+  fileFilter: fileFilter,
+  limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
+/* CREATE */
+// Create a new program
+router.post('/', verifyToken, upload.single('image'), validateRequest(createProgramSchema), programsController.createProgram);
+
 /* READ */
-router.get("/", verifyToken, getFeedPrograms);
-router.get("/user", verifyToken, getUserPrograms);
-router.get("/creator", verifyToken, getCreatorPrograms);
-router.get("/personal", verifyToken, getPersonalProgram);
-router.get("/:programId", verifyToken, getProgram);
+// Get all public programs for the feed
+router.get('/feed', verifyToken, programsController.getFeedPrograms);
+
+// Get all programs that a user is subscribed to
+router.get('/user', verifyToken, programsController.getUserPrograms);
+
+// Get all programs that were created by the current user
+router.get('/creator', verifyToken, programsController.getCreatorPrograms);
+
+// Get or create a personal program for the user
+router.get('/personal', verifyToken, programsController.getPersonalProgram);
+
+// Get a specific program by ID
+router.get('/:programId', verifyToken, programsController.getProgram);
 
 /* UPDATE */
-router.post("/:id/edit", verifyToken, upload.single('image'), validateRequest(updateProgramSchema), editProgram);
-router.delete("/:id/delete", verifyToken, validateRequest({
-  params: updateProgramSchema.params
-}), deleteProgram);
+// Edit a program
+router.patch('/', verifyToken, upload.single('image'), programsController.editProgram);
 
-/* WRITE */
-router.post("/new", verifyToken, upload.single('image'), validateRequest(createProgramSchema), createProgram);
-router.post("/:programId/subscribe", verifyToken, subscribeProgram);
-router.post("/:programId/unsubscribe", verifyToken, unsubscribeProgram);
+// Delete a program
+router.delete('/:id', verifyToken, programsController.deleteProgram);
 
-export default router;
+/* SUBSCRIBE/UNSUBSCRIBE */
+// Subscribe to a program
+router.post('/subscribe/:programId', verifyToken, programsController.subscribeProgram);
+
+// Unsubscribe from a program
+router.delete('/subscribe/:programId', verifyToken, programsController.unsubscribeProgram);
+
+export default router; 

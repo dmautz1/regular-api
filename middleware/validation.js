@@ -105,14 +105,17 @@ export const createTaskSchema = {
     priority: Joi.string().valid('low', 'medium', 'high').default('medium'),
     category: Joi.string().allow(''),
     tags: Joi.array().items(Joi.string()),
-    userId: Joi.string()
+    userId: Joi.string(),
+    isRecurring: Joi.boolean().default(false),
+    recurringDays: Joi.array().items(Joi.number().min(0).max(6)).allow(null)
   })
 };
 
 // Schema for updating tasks
 export const updateTaskSchema = {
   params: Joi.object({
-    id: Joi.string().required().messages({
+    id: Joi.string().guid({ version: 'uuidv4' }).required().messages({
+      'string.guid': 'Task ID must be a valid UUID',
       'any.required': 'Task ID is required'
     })
   }),
@@ -203,6 +206,40 @@ export const updatePasswordSchema = {
     confirmNewPassword: Joi.string().valid(Joi.ref('newPassword')).required().messages({
       'any.only': 'Passwords must match',
       'any.required': 'Password confirmation is required'
+    })
+  })
+};
+
+// Schema for activities
+export const activitySchema = {
+  body: Joi.object({
+    programId: Joi.string().required().messages({
+      'any.required': 'Program ID is required'
+    }),
+    activities: Joi.array().items(Joi.object({
+      id: Joi.string(), // Optional for updates
+      title: Joi.string().required().messages({
+        'any.required': 'Activity title is required'
+      }),
+      description: Joi.string().allow(''),
+      cron: Joi.string().required().messages({
+        'any.required': 'Cron expression is required'
+      }),
+      position: Joi.number().integer().min(0) // Optional for ordering
+    })).required().messages({
+      'any.required': 'At least one activity is required'
+    })
+  })
+};
+
+// Schema for reordering activities
+export const reorderActivitiesSchema = {
+  body: Joi.object({
+    programId: Joi.string().required().messages({
+      'any.required': 'Program ID is required'
+    }),
+    activityIds: Joi.array().items(Joi.string()).required().messages({
+      'any.required': 'Activity IDs are required for reordering'
     })
   })
 }; 

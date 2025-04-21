@@ -1,301 +1,310 @@
-import User from '../models/user.js';
-import Creator from '../models/creator.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { saveFile, getFileUrl } from '../utils/fileUpload.js';
+import { supabase } from '../utils/db.js';
+import { formatErrorResponse } from '../utils/formatResponse.js';
+import { v4 as uuidv4 } from 'uuid';
+import { createClient } from '@supabase/supabase-js';
+import config from '../config/config.js';
 
-// Get file path for __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-/* READ */
-export const getUser = async (req, res) => {
+/* GET PROFILE */
+export const getProfile = async (req, res) => {
     try {
-        // Use authenticated user's ID if accessing through /profile endpoint
-        const id = req.path === '/profile' ? req.user.id : req.params.id;
-        const user = await User.findById(id);
-        
-        // Don't send password to client
-        const userResponse = {
-            _id: user._id,
-            email: user.email,
-            name: user.name || '',
-            bio: user.bio || '',
-            avatarUrl: user.avatarUrl || '',
-            subscriptions: user.subscriptions,
-            tasks: user.tasks,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt
-        };
-        
-        res.status(200).json(userResponse);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-export const getUserFriends = async (req, res) => {
-    try {
-        const { id } = req.params;
-        const user = await User.findById(id);
-
-        const friends = await Promise.all(
-            user.friends.map((id) => User.findById(id))
-        );
-        const formattedFriends = friends.map(
-            ({ _id, firstName, lastName, occupation, picturePath }) => {
-                return { _id, firstName, lastName, occupation, picturePath };
-            }
-        );
-        res.status(200).json(formattedFriends);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-/* UPDATE */
-export const addRemoveFriend = async (req, res) => {
-    try {
-        const { id, friendId } = req.params;
-        const user = await User.findById(id);
-        const friend = await User.findById(friendId);
-
-        if (user.friends.includes(friendId)) {
-            user.friends = user.friends.filter((id) => id !== friendId);
-            friend.friends = friend.friends.filter((id) => id !== id);
-        } else {
-            user.friends.push(friendId);
-            friend.friends.push(id);
-        }
-        await user.save();
-        await friend.save();
-
-        const friends = await Promise.all(
-            user.friends.map((id) => User.findById(id))
-        );
-        const formattedFriends = friends.map(
-            ({ _id, firstName, lastName, occupation, picturePath }) => {
-                return { _id, firstName, lastName, occupation, picturePath };
-            }
-        );
-        res.status(200).json(formattedFriends);
-    }
-    catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-/* CREATOR FUNCTIONS */
-export const becomeCreator = async (req, res) => {
-    try {
-        const { name, description, link } = req.body;
         const userId = req.user.id;
-
-        // Check if user already has a creator profile
-        const existingCreator = await Creator.findOne({ user: userId });
-        if (existingCreator) {
-            return res.status(400).json({ message: "User already has a creator profile" });
-        }
-
-        let imagePath = 'public/assets/default-creator.jpg';
-        let filename = 'default-creator.jpg';
-
-        // If a file was uploaded
-        if (req.file) {
-            // Define the path for remote storage
-            const remotePath = `creators/${req.file.filename}`;
+        
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
+        // Get user profile from Supabase
+        const { data: profile, error } = await userSupabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .single();
             
-            // Save the file to the appropriate storage (local or remote)
-            await saveFile(req.file, '/public/assets/creators', remotePath);
-            
-            // Get the file URL
-            imagePath = getFileUrl(req.file.filename, remotePath);
-            filename = req.file.filename;
+        if (error) {
+            console.error('Error fetching profile:', error);
+            return res.status(404).json(formatErrorResponse('Profile not found'));
         }
-
-        // Create new creator profile
-        const newCreator = new Creator({
-            user: userId,
-            name: name,
-            description: description,
-            link: link,
-            image: {
-                path: imagePath,
-                filename: filename
-            },
-            programs: []
+        
+        // Get subscription counts
+        const { count: subscriberCount, error: subError } = await userSupabase
+            .from('subscriptions')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userId);
+            
+        // Get program counts
+        const { count: programCount, error: programError } = await userSupabase
+            .from('programs')
+            .select('*', { count: 'exact', head: true })
+            .eq('creator_id', userId)
+            .eq('is_personal', false)
+            .eq('is_deleted', false);
+            
+        // Format the response to match what the frontend expects
+        return res.status(200).json({
+            name: `${profile.first_name} ${profile.last_name}`.trim(),
+            email: profile.email,
+            bio: profile.bio || '',
+            avatarUrl: profile.avatar_url || '',
+            subscriptionCount: subscriberCount || 0,
+            programCount: programCount || 0
         });
-
-        await newCreator.save();
-        res.status(201).json(newCreator);
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ message: error.message });
+        console.error('Error in getProfile:', error);
+        return res.status(500).json(formatErrorResponse('Internal server error'));
     }
 };
 
-export const getCreatorProfile = async (req, res) => {
+/* UPDATE PROFILE */
+export const updateProfile = async (req, res) => {
     try {
         const userId = req.user.id;
-        const creator = await Creator.findOne({ user: userId }).populate("programs");
+        console.log('Updating profile for user:', userId);
         
-        if (!creator) {
-            return res.status(404).json({ message: "Creator profile not found" });
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
+        // First check if profile exists
+        const { data: existingProfile, error: fetchError } = await userSupabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .single();
+            
+        if (fetchError) {
+            console.error('Error fetching profile:', fetchError);
+            return res.status(404).json(formatErrorResponse('Profile not found'));
         }
         
-        res.status(200).json(creator);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-export const updateCreatorProfile = async (req, res) => {
-    try {
-        const userId = req.user.id;
-        const { name, description, link } = req.body;
+        console.log('Existing profile:', existingProfile);
         
-        const creator = await Creator.findOne({ user: userId });
-        if (!creator) {
-            return res.status(404).json({ message: "Creator profile not found" });
-        }
-        
-        // Update fields
-        if (name) creator.name = name;
-        if (description) creator.description = description;
-        if (link) creator.link = link;
-        
-        // If a new image was uploaded
-        if (req.file) {
-            // Define the path for remote storage
-            const remotePath = `creators/${req.file.filename}`;
-            
-            // Save the file to the appropriate storage (local or remote)
-            await saveFile(req.file, '/public/assets/creators', remotePath);
-            
-            // Get the file URL
-            const imagePath = getFileUrl(req.file.filename, remotePath);
-            
-            creator.image = {
-                path: imagePath,
-                filename: req.file.filename
-            };
-        }
-        
-        await creator.save();
-        res.status(200).json(creator);
-    } catch (error) {
-        res.status(500).json({ message: error.message });
-    }
-};
-
-/* PROFILE UPDATES */
-export const updateUserProfile = async (req, res) => {
-    try {
-        // Use authenticated user's ID if accessing through /profile endpoint
-        const id = req.path === '/profile' ? req.user.id : req.params.id;
         const { name, bio } = req.body;
         
-        // Check if user is updating their own profile
-        if (id !== req.user.id) {
-            return res.status(403).json({ message: "You can only update your own profile" });
-        }
-
-        const user = await User.findById(id);
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        // Update fields if provided
-        if (name !== undefined) user.name = name;
-        if (bio !== undefined) user.bio = bio;
-        
-        await user.save();
-        
-        // Return updated user without password
-        const userResponse = {
-            _id: user._id,
-            email: user.email,
-            name: user.name,
-            bio: user.bio,
-            avatarUrl: user.avatarUrl,
-            subscriptions: user.subscriptions,
-            tasks: user.tasks,
-            createdAt: user.createdAt,
-            updatedAt: user.updatedAt
+        // Prepare update data
+        const updateData = {
+            updated_at: new Date().toISOString()
         };
         
-        res.status(200).json(userResponse);
+        // Split name into first and last name if provided
+        if (name !== undefined) {
+            const nameParts = name.trim().split(' ');
+            updateData.first_name = nameParts[0] || '';
+            updateData.last_name = nameParts.slice(1).join(' ') || '';
+        }
+        
+        if (bio !== undefined) updateData.bio = bio;
+        
+        // Update avatar if provided
+        if (req.file) {
+            // Upload avatar to Supabase Storage
+            const fileExt = req.file.originalname.split('.').pop();
+            const fileName = `${uuidv4()}.${fileExt}`;
+            const filePath = `avatars/${fileName}`;
+            
+            const { error: uploadError } = await userSupabase.storage
+                .from('avatars')
+                .upload(filePath, req.file.buffer, {
+                    contentType: req.file.mimetype,
+                });
+                
+            if (uploadError) {
+                console.error('Error uploading avatar:', uploadError);
+                return res.status(500).json(formatErrorResponse('Error uploading avatar'));
+            }
+            
+            // Get public URL for avatar
+            const { data: { publicUrl } } = userSupabase.storage
+                .from('avatars')
+                .getPublicUrl(filePath);
+                
+            // Update profile with new avatar URL
+            updateData.avatar_url = publicUrl;
+        }
+        
+        console.log('Update data:', updateData);
+        
+        // First update the profile
+        const { error: updateError } = await userSupabase
+            .from('profiles')
+            .update(updateData)
+            .eq('id', userId);
+            
+        if (updateError) {
+            console.error('Error updating profile:', updateError);
+            return res.status(400).json(formatErrorResponse('Error updating profile'));
+        }
+        
+        // Then fetch the updated profile
+        const { data: updatedProfile, error: selectError } = await userSupabase
+            .from('profiles')
+            .select('*')
+            .eq('id', userId)
+            .single();
+            
+        if (selectError) {
+            console.error('Error fetching updated profile:', selectError);
+            return res.status(400).json(formatErrorResponse('Error fetching updated profile'));
+        }
+        
+        // Format the response to match what the frontend expects
+        return res.status(200).json({
+            name: `${updatedProfile.first_name} ${updatedProfile.last_name}`.trim(),
+            email: updatedProfile.email,
+            bio: updatedProfile.bio || '',
+            avatarUrl: updatedProfile.avatar_url || ''
+        });
     } catch (error) {
-        console.error("Error updating user profile:", error);
-        res.status(500).json({ message: error.message });
+        console.error('Error in updateProfile:', error);
+        return res.status(500).json(formatErrorResponse('Internal server error'));
     }
 };
 
-export const uploadUserAvatar = async (req, res) => {
+/* GET USER STATS */
+export const getUserStats = async (req, res) => {
     try {
-        // Use authenticated user's ID if accessing through /avatar endpoint
-        const id = req.path === '/avatar' ? req.user.id : req.params.id;
+        const userId = req.user.id;
         
-        // Check if user is updating their own avatar
-        if (id !== req.user.id) {
-            // Remove the uploaded file if it exists
-            if (req.file) {
-                fs.unlinkSync(req.file.path);
-            }
-            return res.status(403).json({ message: "You can only update your own avatar" });
-        }
-
-        // Check if file was uploaded
-        if (!req.file) {
-            return res.status(400).json({ message: "No avatar file uploaded" });
-        }
-
-        // Get user
-        const user = await User.findById(id);
-        if (!user) {
-            // Remove the uploaded file
-            fs.unlinkSync(req.file.path);
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        // If user already has an avatar, delete the old one
-        if (user.avatarUrl) {
-            try {
-                // Extract the filename from the avatarUrl
-                const oldAvatarPath = user.avatarUrl.replace('http://localhost:3001/', '');
-                const fullPath = path.join(__dirname, '..', oldAvatarPath);
-                
-                // Only delete if it's in the avatars directory (safety check)
-                if (oldAvatarPath.includes('avatars') && fs.existsSync(fullPath)) {
-                    fs.unlinkSync(fullPath);
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
                 }
-            } catch (unlinkError) {
-                console.error("Error deleting old avatar:", unlinkError);
-                // Continue with the update even if old file deletion fails
+            }
+        );
+        
+        // Get today's date and first/last day of week
+        const today = new Date();
+        const firstDayOfWeek = new Date(today.setDate(today.getDate() - today.getDay())).toISOString().split('T')[0];
+        const lastDayOfWeek = new Date(today.setDate(today.getDate() - today.getDay() + 6)).toISOString().split('T')[0];
+        
+        // Get completed tasks this week
+        const { count: weeklyCompleted, error: weeklyError } = await userSupabase
+            .from('tasks')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userId)
+            .eq('is_completed', true)
+            .gte('due_date', firstDayOfWeek)
+            .lte('due_date', lastDayOfWeek)
+            .is('is_deleted', false);
+            
+        // Get total tasks this week
+        const { count: weeklyTotal, error: weeklyTotalError } = await userSupabase
+            .from('tasks')
+            .select('*', { count: 'exact', head: true })
+            .eq('user_id', userId)
+            .gte('due_date', firstDayOfWeek)
+            .lte('due_date', lastDayOfWeek)
+            .is('is_deleted', false);
+        // Get program count
+        const { count: programCount, error: programError } = await userSupabase
+            .from('programs')
+            .select('*', { count: 'exact', head: true })
+            .eq('creator_id', userId)
+            .eq('is_personal', false)
+            .eq('is_deleted', false);
+            
+        // Calculate streak by finding the last day where no tasks were completed
+        const { data: lastIncompleteDay, error: streakError } = await userSupabase
+            .from('tasks')
+            .select('due_date, is_completed')
+            .eq('user_id', userId)
+            .lte('due_date', req.query.today)
+            .is('is_deleted', false)
+            .order('due_date', { ascending: false });
+            
+        console.log(`Last incomplete day: ${lastIncompleteDay?.[0]?.due_date}`);
+        
+        let streak = 0;
+        if (lastIncompleteDay && lastIncompleteDay.length > 0) {
+            // Group tasks by date
+            const tasksByDate = lastIncompleteDay.reduce((acc, task) => {
+                const date = task.due_date.split('T')[0];
+                if (!acc[date]) {
+                    acc[date] = [];
+                }
+                acc[date].push(task);
+                return acc;
+            }, {});
+            
+            // Find the last date where no tasks were completed
+            const dates = Object.keys(tasksByDate).sort().reverse();
+            let lastIncompleteDate = null;
+            
+            for (const date of dates) {
+                const tasks = tasksByDate[date];
+                const hasCompletedTask = tasks.some(task => task.is_completed);
+                if (!hasCompletedTask) {
+                    lastIncompleteDate = new Date(date);
+                    break;
+                }
+            }
+            
+            if (lastIncompleteDate) {
+                streak = Math.floor((today - lastIncompleteDate) / (1000 * 60 * 60 * 24));
             }
         }
-
-        // Update user with new avatar
-        const relativePath = req.file.path.replace(/\\/g, '/');
-        user.avatarUrl = `http://localhost:3001/${relativePath}`;
-        await user.save();
-
-        res.status(200).json({ 
-            message: "Avatar uploaded successfully",
-            avatarUrl: user.avatarUrl
+        
+        return res.status(200).json({
+            weeklyCompleted: weeklyCompleted || 0,
+            completionRate: Math.round((weeklyCompleted / weeklyTotal) * 100) || 0,
+            programCount: programCount || 0,
+            streak: streak
         });
     } catch (error) {
-        // If there's an error, delete the uploaded file
-        if (req.file) {
-            try {
-                fs.unlinkSync(req.file.path);
-            } catch (unlinkError) {
-                console.error("Error deleting avatar file after error:", unlinkError);
-            }
-        }
-        
-        console.error("Error uploading avatar:", error);
-        res.status(500).json({ message: error.message });
+        console.error('Error in getUserStats:', error);
+        return res.status(500).json(formatErrorResponse('Internal server error'));
     }
+};
+
+export default {
+    getProfile,
+    updateProfile,
+    getUserStats
 };

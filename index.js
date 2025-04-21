@@ -1,5 +1,4 @@
 import express from "express";
-import mongoose from "mongoose";
 import cors from "cors";
 import multer from "multer";
 import helmet from "helmet";
@@ -16,12 +15,12 @@ import programRoutes from "./routes/programs.js";
 import activityRoutes from "./routes/activities.js";
 import { register } from "./controllers/auth.js";
 import { verifyToken } from "./middleware/auth.js";
-import { apiLimiter, createAccountLimiter } from "./middleware/rateLimit.js";
 import { verifyRecaptcha } from "./middleware/recaptcha.js";
 import { validateRequest, registerSchema } from "./middleware/validation.js";
 import config from './config/config.js';
 import csrf from 'csurf';
 import cookieParser from 'cookie-parser';
+import { initializeStorageBuckets } from './utils/storage.js';
 
 /* CONFIGURATION */
 const __filename = fileURLToPath(import.meta.url);
@@ -64,13 +63,10 @@ const corsOptions = {
 };
 app.use(cors(corsOptions));
 
-// Apply API rate limiter to all routes
-app.use(apiLimiter);
-
 // Cookie parser for CSRF protection
 app.use(cookieParser());
 
-// Set up CSRF protection - excluding paths that don't require it
+// Set up CSRF protection
 const csrfProtection = csrf({ 
   cookie: {
     key: 'CSRF-TOKEN',
@@ -81,7 +77,7 @@ const csrfProtection = csrf({
 });
 
 // CSRF protection route for getting token
-app.get('/csrf-token', (req, res) => {
+app.get('/csrf-token', csrfProtection, (req, res) => {
   res.json({ csrfToken: req.csrfToken() });
 });
 
@@ -118,18 +114,28 @@ if (!fs.existsSync(defaultImagePath)) {
 }
 
 /* FILE STORAGE */
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, "public/assets");
-    },
-    filename: (req, file, cb) => {
-        cb(null, file.originalname);
-    }
+const storage = multer.memoryStorage(); // Use memory storage for Supabase uploads
+
+// Configure file filtering
+const fileFilter = (req, file, cb) => {
+  const allowedFileTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+  const maxFileSize = 5 * 1024 * 1024; // 5MB
+  
+  if (!allowedFileTypes.includes(file.mimetype)) {
+    return cb(new Error('Only .jpeg, .jpg, .png, and .webp files are allowed'), false);
+  }
+  
+  cb(null, true);
+};
+
+const upload = multer({
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
-const upload = multer({ storage: storage });
 
 /* ROUTES WITH FILES */
-app.post("/auth/register", createAccountLimiter, upload.single("picture"), (req, res, next) => {
+app.post("/auth/register", upload.single("picture"), (req, res, next) => {
   // Move file data from req.file to req.body so validateRequest can access it
   if (req.file) {
     req.body.picturePath = req.file.path;
@@ -141,10 +147,10 @@ app.post("/auth/register", createAccountLimiter, upload.single("picture"), (req,
 app.use("/auth", authRoutes);
 
 // Apply CSRF protection for authenticated routes
-app.use("/users", csrfProtection, userRoutes);
-app.use("/tasks", csrfProtection, taskRoutes);
-app.use("/programs", csrfProtection, programRoutes);
-app.use("/activities", csrfProtection, activityRoutes);
+app.use("/users", csrfProtection, verifyToken, userRoutes);
+app.use("/tasks", csrfProtection, verifyToken, taskRoutes);
+app.use("/programs", csrfProtection, verifyToken, programRoutes);
+app.use("/activities", csrfProtection, verifyToken, activityRoutes);
 
 /* ERROR HANDLING MIDDLEWARE */
 app.use((err, req, res, next) => {
@@ -194,17 +200,16 @@ app.use((err, req, res, next) => {
   });
 });
 
-/* MONGOOSE SETUP */
+/* SERVER SETUP */
 const PORT = config.server.port;
 const HTTP_PORT = parseInt(PORT) - 1 || 3000; // HTTP port for redirects
 
 // Function to start the server
 const startServer = async () => {
   try {
-    await mongoose.connect(config.mongodb.url, {
-      useNewUrlParser: true,
-      useUnifiedTopology: true,
-    });
+    // Initialize storage buckets (only if they don't exist)
+    await initializeStorageBuckets(false);
+    console.log('Supabase storage buckets initialized');
     
     // Use HTTPS only in production
     if (config.isProduction) {
@@ -246,19 +251,21 @@ const startServer = async () => {
           console.log(`HTTP redirect server running on port: ${HTTP_PORT}`);
         });
         
-        return;
+      } else {
+        // Fallback to HTTP if no certificates
+        app.listen(PORT, () => {
+          console.log(`HTTP Server running in ${config.environment} mode on port: ${PORT}`);
+        });
       }
+    } else {
+      // Development or test environment - use HTTP
+      app.listen(PORT, () => {
+        console.log(`HTTP Server running in ${config.environment} mode on port: ${PORT}`);
+      });
     }
-    
-    // Fallback to HTTP for development or if HTTPS setup fails
-    app.listen(PORT, () => {
-      console.log(`HTTP Server running in ${config.environment} mode on port: ${PORT}`);
-    });
-  } catch (error) {
-    console.log("Database connection error:", error.message);
-    process.exit(1);
+  } catch (err) {
+    console.error('Server startup error:', err);
   }
 };
 
-// Start the server
 startServer();

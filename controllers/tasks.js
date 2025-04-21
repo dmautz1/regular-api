@@ -1,290 +1,111 @@
-import Task from '../models/task.js';
-import User from '../models/user.js';
-import Program from '../models/program.js';
-import cronParser from 'cron-parser';
-import Activity from '../models/activity.js';
-
-// Number of days to populate tasks in advance
-const DAYS_TO_POPULATE = 30;
-
-function checkDate(expression, date) {
-    try {
-      let data = cronParser.parseExpression(expression).fields;
-      
-      // Check month (always check month)
-      if (!data.month.includes(date.getMonth() + 1)) {
-        return false;
-      }
-      
-      // Get the day of the week (0-6, Sunday is 0)
-      const dayOfWeek = date.getDay();
-      
-      // If day of month or day of week is specified (not wildcard), 
-      // at least one of them should match
-      const isDayOfMonthWildcard = expression.split(' ')[2] === '*';
-      const isDayOfWeekWildcard = expression.split(' ')[4] === '*';
-      
-      if (!isDayOfMonthWildcard) {
-        // Day of month is specified, check if it matches
-        if (data.dayOfMonth.includes(date.getDate())) {
-          return true;
-        }
-      }
-      
-      if (!isDayOfWeekWildcard) {
-        // Day of week is specified, check if it matches
-        if (data.dayOfWeek.includes(dayOfWeek)) {
-          return true;
-        }
-      }
-      
-      // If both day of month and day of week are wildcards, then any day matches
-      if (isDayOfMonthWildcard && isDayOfWeekWildcard) {
-        return true;
-      }
-      
-      // If we got here, it means neither day of month nor day of week matched
-      return false;
-    } catch (e) {
-      console.error("Error checking date with cron expression:", e);
-      return false;
-    }
-}
-
-/* Utility function to manage future tasks when a user subscribes/unsubscribes from a program */
-export const manageFutureTasks = async (userId, programId, isSubscribing = true) => {
-    try {
-        // Get today's date and set to start of day
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const todayString = today.toISOString().split('T')[0];
-        
-        // Get the program with its activities
-        const program = await Program.findById(programId).populate('activities');
-        if (!program || !program.activities || program.activities.length === 0) {
-            return;
-        }
-        
-        if (isSubscribing) {
-            // When subscribing, add tasks for the current day and next DAYS_TO_POPULATE days
-            for (let i = 0; i < DAYS_TO_POPULATE; i++) {
-                const targetDate = new Date(today);
-                targetDate.setDate(today.getDate() + i);
-                const targetDateString = targetDate.toISOString().split('T')[0];
-                
-                // Filter activities scheduled for this day
-                const activitiesForDay = program.activities.filter(activity => 
-                    checkDate(activity.cron, targetDate)
-                );
-                
-                // Create tasks for each activity
-                for (const activity of activitiesForDay) {
-                    // Check if a task already exists (and wasn't deleted)
-                    const existingTask = await Task.findOne({ 
-                        user: userId, 
-                        activity: activity._id, 
-                        dueDate: targetDateString,
-                        isDeleted: { $ne: true }
-                    });
-                    
-                    // Only create if it doesn't exist
-                    if (!existingTask) {
-                        await Task.create({
-                            user: userId,
-                            activity: activity._id,
-                            title: activity.title,
-                            dueDate: targetDateString,
-                            complete: false,
-                            isDeleted: false
-                        });
-                    }
-                }
-            }
-        } else {
-            // When unsubscribing, mark all future tasks as deleted (don't touch past tasks)
-            await Task.updateMany(
-                { 
-                    user: userId,
-                    activity: { $in: program.activities.map(a => a._id) },
-                    dueDate: { $gte: todayString },
-                    isDeleted: { $ne: true }
-                },
-                { 
-                    isDeleted: true 
-                }
-            );
-        }
-    } catch (error) {
-        console.error('Error managing future tasks:', error);
-        throw error;
-    }
-};
+import { supabase } from '../utils/db.js';
+import { formatErrorResponse } from '../utils/formatResponse.js';
+import { createClient } from '@supabase/supabase-js';
+import config from '../config/config.js';
 
 /* CREATE */
 export const createTask = async (req, res) => {
     try {
-        const { title, dueDate } = req.body;
+        const { title, description, dueDate, priority = 'medium', isRecurring, recurringDays } = req.body;
         
         if (!title) {
-            return res.status(400).json({ message: "Task title is required" });
+            return res.status(400).json(formatErrorResponse("Task title is required"));
         }
         
         console.log(`Creating task "${title}" for user ${req.user.id} due on ${dueDate}`);
         
-        const newTask = new Task({
-            user: req.user.id,
-            title: title,
-            dueDate: dueDate || new Date().toISOString().split('T')[0],
-            complete: false,
-            isDeleted: false
-        });
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
         
-        await newTask.save();
-        console.log(`Created task with ID: ${newTask._id}`);
-        
-        res.status(201).json(newTask);
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+
+        if (isRecurring && recurringDays && recurringDays.length > 0) {
+            // For recurring tasks, we need to create an activity in the user's personal program
+            // First, get the user's personal program
+            const { data: personalProgram, error: programError } = await userSupabase
+                .from('programs')
+                .select('id')
+                .eq('creator_id', req.user.id)
+                .eq('is_personal', true)
+                .single();
+
+            if (programError) {
+                console.error("Error fetching personal program:", programError);
+                return res.status(400).json({ message: "Could not find personal program" });
+            }
+
+            // Create cron expression from selected days
+            // Format: "0 12 * * 1,3,5" for noon on Monday, Wednesday, Friday
+            const days = recurringDays.join(',');
+            const cronExpression = `0 12 * * ${days}`;
+
+            // Create the activity
+            const { data: activity, error: activityError } = await userSupabase
+                .from('activities')
+                .insert({
+                    program_id: personalProgram.id,
+                    title: title,
+                    description: description || 'Recurring personal task',
+                    cron: cronExpression,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+
+            if (activityError) {
+                console.error("Error creating activity:", activityError);
+                return res.status(400).json({ message: "Could not create recurring activity" });
+            }
+
+            // Now create the initial task
+
+            console.log(`Created recurring task successfully`);
+            res.status(201).json({ message: "Recurring task created successfully" });
+        } else {
+            // Handle regular non-recurring task
+            const { error } = await userSupabase
+                .from('tasks')
+                .insert({
+                    title,
+                    description: description || '',
+                    user_id: req.user.id,
+                    due_date: dueDate,
+                    is_completed: false,
+                    priority: priority,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                });
+            
+            if (error) {
+                console.error("Error inserting task:", error);
+                return res.status(400).json({ message: error.message });
+            }
+            
+            console.log(`Created task successfully`);
+            res.status(201).json({ message: "Task created successfully" });
+        }
     } catch (error) {
         console.error("Error creating task:", error);
         res.status(500).json({ message: error.message });
     }
 };
-
-export const populateUserTasks = async (req, res) => {
-    try {
-        const { day } = req.body;
-        const { userId } = req.params;
-        
-        if (!day) {
-            return res.status(400).json({ message: "Day parameter is required" });
-        }
-        
-        // Check if the requested day is in the past
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        const targetDate = new Date(day);
-        targetDate.setHours(0, 0, 0, 0);
-        
-        if (targetDate < today) {
-            console.log(`Skipping task population for past date ${day}`);
-            return res.status(200).json({ 
-                message: "Cannot populate tasks for days in the past",
-                count: 0
-            });
-        }
-        
-        console.log(`Populating tasks for user ${userId} on day ${day}`);
-        
-        // get all user subscription activities
-        const user = await User.findById(userId).populate({
-            path: 'subscriptions', 
-            populate: { 
-                path: 'program', 
-                populate: { 
-                    path: 'activities' 
-                } 
-            } 
-        });
-        
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-        
-        if (!user.subscriptions || user.subscriptions.length === 0) {
-            console.log(`User ${userId} has no subscriptions`);
-        } else {
-            console.log(`User has ${user.subscriptions.length} subscriptions`);
-        }
-        
-        // Log each program to debug
-        user.subscriptions.forEach((sub, index) => {
-            if (!sub.program) {
-                console.log(`Subscription ${index} has no program`);
-            } else {
-                console.log(`Program ${sub.program._id}: ${sub.program.title} with ${sub.program.activities ? sub.program.activities.length : 0} activities`);
-            }
-        });
-        
-        const activities = user.subscriptions
-            .filter(sub => sub.program) // Filter out null programs
-            .map(subscription => subscription.program.activities)
-            .flat()
-            .filter(activity => activity); // Filter out any undefined activities
-            
-        console.log(`Found ${activities.length} activities across all subscribed programs`);
-        
-        // filter out only activities that are scheduled for the day
-        const activity_list = [];
-        targetDate.setHours(0, 0, 0, 0); // Ensure date is at start of day
-        
-        activities.forEach((activity) => {
-            if (activity.cron) {
-                const matches = checkDate(activity.cron, targetDate);
-                console.log(`Activity ${activity._id}: "${activity.title}" with cron "${activity.cron}" - Matches: ${matches}`);
-                if (matches) {
-                    activity_list.push(activity);
-                }
-            } else {
-                console.log(`Activity ${activity._id} has no cron expression`);
-            }
-        });
-        
-        console.log(`Found ${activity_list.length} activities scheduled for ${day}`);
-        
-        // Process each activity
-        const createdTasks = [];
-        for (const activity of activity_list) {
-            // Check if this task was previously deleted by the user
-            const existingTask = await Task.findOne({ 
-                user: userId, 
-                activity: activity._id, 
-                dueDate: day
-            });
-            
-            // Log the task status
-            if (existingTask) {
-                if (existingTask.isDeleted) {
-                    console.log(`Task for activity ${activity._id} exists but was previously deleted`);
-                } else {
-                    console.log(`Task for activity ${activity._id} already exists`);
-                }
-            } else {
-                console.log(`Creating new task for activity ${activity._id}`);
-            }
-            
-            // Only create or update the task if it doesn't exist or isn't marked as deleted
-            if (!existingTask || !existingTask.isDeleted) {
-                const newTask = await Task.findOneAndUpdate(
-                    { 
-                        user: userId, 
-                        activity: activity._id, 
-                        dueDate: day,
-                        isDeleted: { $ne: true } // Don't update tasks that were deleted
-                    }, 
-                    { 
-                        user: userId, 
-                        activity: activity._id, 
-                        title: activity.title, 
-                        dueDate: day,
-                        isDeleted: false // Ensure it's not marked as deleted
-                    }, 
-                    { upsert: true, new: true }
-                );
-                createdTasks.push(newTask);
-            }
-        }
-        
-        console.log(`Successfully processed ${createdTasks.length} tasks for day ${day}`);
-        
-        res.status(200).json({ 
-            message: "Tasks populated for day",
-            count: createdTasks.length
-        });
-    } catch (error) {
-        console.error("Error populating tasks:", error);
-        res.status(500).json({ message: error.message });
-    }
-};
-
 
 /* READ */
 export const getFeedTasks = async (req, res) => {
@@ -298,16 +119,44 @@ export const getFeedTasks = async (req, res) => {
         
         console.log(`Fetching tasks for user ${userId} on day ${day}`);
         
-        // Find tasks for this user on this day
-        const tasks = await Task.find({ 
-            user: userId, 
-            dueDate: day,
-            isDeleted: { $ne: true } // Exclude deleted tasks
-        });
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
         
-        console.log(`Found ${tasks.length} tasks for day ${day}`);
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
         
-        res.status(200).json(tasks);
+        // Find tasks for this user on this day from Supabase
+        const { data: tasks, error } = await userSupabase
+            .from('tasks')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('due_date', day)
+            .is('is_deleted', false) // Exclude deleted tasks
+            .order('created_at', { ascending: true });
+        
+        if (error) {
+            console.error("Error fetching tasks:", error);
+            return res.status(400).json({ message: error.message });
+        }
+        
+        console.log(`Found ${tasks?.length || 0} tasks for day ${day}`);
+        
+        res.status(200).json(tasks || []);
     } catch (error) {
         console.error("Error fetching tasks:", error);
         res.status(500).json({ message: error.message });
@@ -325,17 +174,25 @@ export const getUserTasks = async (req, res) => {
             return res.status(403).json({ message: "Not authorized to view these tasks" });
         }
         
-        const tasks = await Task.find({ 
-            user: userId, 
-            dueDate: day,
-            isDeleted: { $ne: true } // Exclude deleted tasks
-        });
+        // Get tasks from Supabase
+        const { data: tasks, error } = await supabase
+            .from('tasks')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('due_date', day)
+            .is('is_deleted', false); // Exclude deleted tasks
+        
+        if (error) {
+            console.error("Error fetching tasks:", error);
+            return res.status(400).json({ message: error.message });
+        }
+        
         res.status(200).json(tasks);
     } catch (error) {
+        console.error("Error fetching tasks:", error);
         res.status(500).json({ message: error.message });
     }
 };
-
 
 /* UPDATE */
 export const completeTask = async (req, res) => {
@@ -343,26 +200,70 @@ export const completeTask = async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
         
-        // Find the task and ensure it belongs to the current user
-        const task = await Task.findOne({
-            _id: id,
-            user: userId
-        });
+        if (!id) {
+            return res.status(400).json({ message: "Task ID is required" });
+        }
         
-        if (!task) {
+        console.log(`Completing task ${id} for user ${userId}`);
+        
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
+        // First check if the task exists and belongs to the user
+        const { data: task, error: fetchError } = await userSupabase
+            .from('tasks')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', userId)
+            .single();
+            
+        if (fetchError) {
+            console.error("Error fetching task:", fetchError);
             return res.status(404).json({ message: "Task not found or not authorized" });
         }
         
-        const isComplete = task.complete;
+        // Toggle the completion status
+        const isComplete = task.is_completed;
+        const completedAt = !isComplete ? new Date().toISOString() : null;
         
-        const updatedTask = await Task.findByIdAndUpdate(
-            id,
-            { complete: !isComplete },
-            { new: true }
-        );
-
+        // Update the task
+        const { data: updatedTask, error: updateError } = await userSupabase
+            .from('tasks')
+            .update({ 
+                is_completed: !isComplete,
+                completed_at: completedAt,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id)
+            .select()
+            .single();
+            
+        if (updateError) {
+            console.error("Error updating task:", updateError);
+            return res.status(400).json({ message: updateError.message });
+        }
+        
         res.status(200).json(updatedTask);
     } catch (error) {
+        console.error("Error completing task:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -372,31 +273,243 @@ export const deleteTask = async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
         
-        // Find the task and ensure it belongs to the current user
-        const task = await Task.findOne({
-            _id: id,
-            user: userId
-        });
+        // First check if the task exists and belongs to the user
+        const { data: task, error: fetchError } = await supabase
+            .from('tasks')
+            .select('*')
+            .eq('id', id)
+            .eq('user_id', userId)
+            .single();
         
-        if (!task) {
-            return res.status(404).json({ message: "Task not found or not authorized" });
+        if (fetchError) {
+            console.error("Error fetching task:", fetchError);
+            return res.status(fetchError.code === 'PGRST116' ? 404 : 400).json({ 
+                message: fetchError.code === 'PGRST116' ? "Task not found or not authorized" : fetchError.message 
+            });
         }
         
-        if (task.activity) {
+        if (task.activity_id) {
             // If the task is from a program activity, mark it as deleted instead of removing it
-            const updatedTask = await Task.findByIdAndUpdate(
-                id,
-                { isDeleted: true },
-                { new: true }
-            );
+            const { data: updatedTask, error: updateError } = await supabase
+                .from('tasks')
+                .update({ 
+                    is_deleted: true,
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', id)
+                .select()
+                .single();
+            
+            if (updateError) {
+                console.error("Error updating task:", updateError);
+                return res.status(400).json({ message: updateError.message });
+            }
+            
             res.status(200).json({ deletedCount: 1, task: updatedTask });
         } else {
             // For regular tasks, actually delete them from the database
-            const result = await Task.deleteOne({ _id: id });
-            res.status(200).json(result);
+            const { error: deleteError } = await supabase
+                .from('tasks')
+                .delete()
+                .eq('id', id);
+            
+            if (deleteError) {
+                console.error("Error deleting task:", deleteError);
+                return res.status(400).json({ message: deleteError.message });
+            }
+            
+            res.status(200).json({ deletedCount: 1 });
         }
-        
     } catch (error) {
+        console.error("Error deleting task:", error);
         res.status(500).json({ message: error.message });
     }
 };
+
+export const populateUserTasks = async (req, res) => {
+    try {
+        const { day } = req.body;
+        const userId = req.user.id;
+        
+        if (!day) {
+            return res.status(400).json({ message: "Day parameter is required" });
+        }
+        
+        console.log(`Populating tasks for user ${userId} on day ${day}`);
+        
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+
+        // Get user's personal program and its activities
+        const { data: personalProgram, error: personalProgramError } = await userSupabase
+            .from('programs')
+            .select(`
+                id,
+                activities:activities (
+                    id,
+                    title,
+                    description,
+                    cron
+                )
+            `)
+            .eq('creator_id', userId)
+            .eq('is_personal', true)
+            .single();
+
+        if (personalProgramError) {
+            console.error("Error fetching personal program:", personalProgramError);
+            return res.status(400).json({ message: "Could not fetch personal program" });
+        }
+
+        // Get all user subscriptions and related programs
+        const { data: subscriptions, error: subError } = await userSupabase
+            .from('subscriptions')
+            .select(`
+                id,
+                program:program_id (
+                    id,
+                    title,
+                    activities:activities (
+                        id,
+                        title,
+                        description,
+                        cron
+                    )
+                )
+            `)
+            .eq('user_id', userId);
+        
+        if (subError) {
+            console.error("Error fetching subscriptions:", subError);
+            return res.status(400).json({ message: subError.message });
+        }
+        
+        // Convert date string to Date object for cron comparison
+        const targetDate = new Date(day);
+        
+        // Collect all activities from personal program and subscribed programs
+        const allActivities = [];
+        
+        // Add activities from personal program
+        if (personalProgram && personalProgram.activities) {
+            allActivities.push(...personalProgram.activities);
+        }
+        
+        // Add activities from subscribed programs
+        for (const subscription of subscriptions) {
+            if (subscription.program && subscription.program.activities) {
+                allActivities.push(...subscription.program.activities);
+            }
+        }
+        
+        console.log(`Found ${allActivities.length} activities across all programs`);
+        
+        // Filter activities scheduled for the target date
+        const scheduledActivities = allActivities.filter(activity => {
+            if (!activity.cron) return false;
+            
+            try {
+                // Parse the cron expression
+                const cronParts = activity.cron.split(' ');
+                if (cronParts.length !== 5) return false;
+                
+                // Get the day of week (0-6, Sunday is 0)
+                const dayOfWeek = targetDate.getDay();
+                
+                // Check if the day matches the cron expression
+                const dayPart = cronParts[4];
+                if (dayPart === '*') return true;
+                
+                const days = dayPart.split(',').map(d => parseInt(d));
+                return days.includes(dayOfWeek);
+            } catch (error) {
+                console.error(`Error parsing cron expression for activity ${activity.id}:`, error);
+                return false;
+            }
+        });
+        
+        console.log(`Found ${scheduledActivities.length} activities scheduled for ${day}`);
+        
+        // Process each scheduled activity
+        const createdTasks = [];
+        for (const activity of scheduledActivities) {
+            // Check if this activity's task already exists
+            const { data: existingTasks, error: checkError } = await userSupabase
+                .from('tasks')
+                .select('*')
+                .eq('user_id', userId)
+                .eq('activity_id', activity.id)
+                .eq('due_date', day)
+                .limit(1);
+                
+            if (checkError) {
+                console.error("Error checking existing task:", checkError);
+                continue; // Skip to next activity
+            }
+            
+            // Only create task if it doesn't exist or isn't deleted
+            if (existingTasks.length === 0 || !existingTasks[0].is_deleted) {
+                // Upsert task for this activity
+                const { data: newTask, error: upsertError } = await userSupabase
+                    .from('tasks')
+                    .upsert({
+                        id: existingTasks.length > 0 ? existingTasks[0].id : undefined,
+                        user_id: userId,
+                        activity_id: activity.id,
+                        title: activity.title,
+                        description: activity.description || '',
+                        due_date: day,
+                        is_completed: existingTasks.length > 0 ? existingTasks[0].is_completed : false,
+                        is_deleted: false,
+                        updated_at: new Date().toISOString()
+                    })
+                    .select()
+                    .single();
+                
+                if (upsertError) {
+                    console.error("Error upserting task:", upsertError);
+                    continue;
+                }
+                
+                createdTasks.push(newTask);
+            }
+        }
+        
+        console.log(`Successfully processed ${createdTasks.length} tasks for day ${day}`);
+        
+        res.status(200).json({ 
+            message: "Tasks populated for day",
+            count: createdTasks.length
+        });
+    } catch (error) {
+        console.error("Error populating tasks:", error);
+        res.status(500).json({ message: error.message });
+    }
+};
+
+export default {
+    createTask,
+    getFeedTasks,
+    getUserTasks,
+    completeTask,
+    deleteTask,
+    populateUserTasks
+}; 

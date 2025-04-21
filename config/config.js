@@ -13,14 +13,17 @@ const envFile = `.env.${environment}`;
 dotenv.config({ path: path.resolve(__dirname, '..', envFile) });
 
 // Fallback to .env if environment-specific file doesn't exist
-if (!process.env.MONGODB_URL) {
+if (!process.env.SUPABASE_URL) {
   dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 }
 
 const config = {
   environment,
-  mongodb: {
-    url: process.env.MONGODB_URL,
+  supabase: {
+    url: process.env.SUPABASE_URL,
+    anonKey: process.env.SUPABASE_ANON_KEY,
+    serviceRoleKey: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    storageBucket: process.env.SUPABASE_STORAGE_BUCKET || 'avatars'
   },
   server: {
     port: process.env.PORT || 3001,
@@ -47,7 +50,7 @@ const config = {
     region: process.env.DO_SPACES_REGION,
     accessKey: process.env.DO_SPACES_ACCESS_KEY,
     secretKey: process.env.DO_SPACES_SECRET_KEY,
-    bucketName: process.env.DO_SPACES_BUCKET_NAME || '0to100-files',
+    bucketName: process.env.DO_SPACES_BUCKET_NAME,
     cdnEndpoint: process.env.DO_SPACES_CDN_ENDPOINT
   },
   isProduction: environment === 'production',

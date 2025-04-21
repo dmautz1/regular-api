@@ -42,7 +42,11 @@
     "dev": "cross-env NODE_ENV=development nodemon index.js",
     "test": "cross-env NODE_ENV=test nodemon index.js",
     "prod": "cross-env NODE_ENV=production node index.js",
-    "test:supabase": "cross-env NODE_ENV=production node utils/testSupabase.js"
+    "test:supabase": "cross-env NODE_ENV=production node utils/testSupabase.js",
+    "migrate:data": "cross-env NODE_ENV=production node utils/migrateToSupabase.js",
+    "migrate:files:avatars": "cross-env NODE_ENV=production node -e \"import { migrateLocalFilesToSupabase } from './utils/supabaseStorage.js'; import path from 'path'; import { fileURLToPath } from 'url'; const __dirname = path.dirname(fileURLToPath(import.meta.url)); migrateLocalFilesToSupabase(path.join(__dirname, 'public/assets/avatars'), 'avatars').then(console.log);\"",
+    "migrate:files:programs": "cross-env NODE_ENV=production node -e \"import { migrateLocalFilesToSupabase } from './utils/supabaseStorage.js'; import path from 'path'; import { fileURLToPath } from 'url'; const __dirname = path.dirname(fileURLToPath(import.meta.url)); migrateLocalFilesToSupabase(path.join(__dirname, 'public/assets/programs'), 'programs').then(console.log);\"",
+    "supabase:init": "cross-env NODE_ENV=production node -e \"import { initializeStorageBuckets } from './utils/supabaseStorage.js'; initializeStorageBuckets().then(console.log);\""
   },
   "keywords": [],
   "author": "",

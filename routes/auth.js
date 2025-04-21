@@ -1,15 +1,16 @@
 import express from "express";
-import { login, register, requestPasswordReset, resetPassword } from "../controllers/auth.js";
-import { authLimiter, createAccountLimiter, passwordResetLimiter } from "../middleware/rateLimit.js";
+import { login, register, requestPasswordReset, resetPassword, logout } from "../controllers/auth.js";
 import { validateRequest, loginSchema, registerSchema, passwordResetRequestSchema, passwordResetSchema } from "../middleware/validation.js";
 import { verifyRecaptcha } from "../middleware/recaptcha.js";
+import { verifyToken } from "../middleware/auth.js";
 
 const router = express.Router();
 
 // Apply rate limiting, reCAPTCHA verification, and validation middleware to auth routes
-router.post("/login", authLimiter, validateRequest(loginSchema), verifyRecaptcha, login);
-router.post("/register", createAccountLimiter, validateRequest(registerSchema), verifyRecaptcha, register);
-router.post("/request-password-reset", passwordResetLimiter, validateRequest(passwordResetRequestSchema), verifyRecaptcha, requestPasswordReset);
-router.post("/reset-password", passwordResetLimiter, validateRequest(passwordResetSchema), resetPassword);
+router.post("/login", validateRequest(loginSchema), verifyRecaptcha, login);
+router.post("/register", validateRequest(registerSchema), verifyRecaptcha, register);
+router.post("/request-reset", validateRequest(passwordResetRequestSchema), verifyRecaptcha, requestPasswordReset);
+router.post("/reset-password", validateRequest(passwordResetSchema), resetPassword);
+router.post("/logout", verifyToken, logout);
 
-export default router;
+export default router; 

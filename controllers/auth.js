@@ -1,144 +1,193 @@
-import bcrypt from 'bcrypt';
-import jwt from 'jsonwebtoken';
+import { supabase, supabaseAdmin } from '../utils/db.js';
+import { initializeStorageBuckets } from '../utils/storage.js';
+import config from '../config/config.js';
 import nodemailer from 'nodemailer';
-import cryptoRandomString from 'crypto-random-string';
-import User from '../models/user.js';
-import ResetToken from '../models/resetToken.js';
-import Program from '../models/program.js';
-import Subscription from '../models/subscription.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-// Get file path for __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Setup nodemailer transporter
 const transporter = nodemailer.createTransport({
-    service: process.env.EMAIL_SERVICE || 'gmail',
+    service: config.email.service || 'gmail',
     auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASSWORD
+        user: config.email.user,
+        pass: config.email.password
     }
 });
 
-/* REGISTER */
+/**
+ * Register a new user using Supabase Auth
+ */
 export const register = async (req, res) => {
     try {
         const { email, password } = req.body;
-
-        // Hash the plain password with bcrypt
-        const salt = await bcrypt.genSalt();
-        const passwordHash = await bcrypt.hash(password, salt);
-
-        // Create new user
-        const newUser = new User({
+        
+        // Register user in Supabase Auth
+        const { data, error } = await supabase.auth.signUp({
             email,
-            password: passwordHash,
-            subscriptions: [] // Initialize subscriptions array
-        });
-        const savedUser = await newUser.save();
-        
-        // Create default personal program for the user
-        const personalProgram = new Program({
-            creator: savedUser._id,
-            title: "Personal Tasks",
-            description: "Your personal recurring tasks",
-            category: "Personal",
-            image: {
-                path: '/public/assets/default-personal-program.jpg',
-                filename: 'default-personal-program.jpg'
-            },
-            link: "",
-            isPrivate: true,
-            isPersonal: true // Special flag to identify this as the personal program
+            password,
+            options: {
+                emailRedirectTo: `${config.client.url}/login`,
+                data: {
+                    role: 'user'
+                }
+            }
         });
         
-        await personalProgram.save();
+        if (error) {
+            return res.status(400).json({ 
+                message: error.message || "Registration failed", 
+                error: error 
+            });
+        }
         
-        // Create subscription to the personal program
-        const personalSubscription = new Subscription({
-            user: savedUser._id,
-            program: personalProgram._id
-        });
-        await personalSubscription.save();
+        // User created successfully
+        if (data?.user) {
+            // Get user ID from Supabase
+            const userId = data.user.id;
+            
+            // Create profile in profiles table using admin client
+            const { error: profileError } = await supabaseAdmin
+                .from('profiles')
+                .insert({
+                    id: userId,
+                    email: email,
+                    username: email.split('@')[0],
+                    first_name: '',
+                    last_name: '',
+                    bio: '',
+                    role: 'user',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                    is_active: true
+                });
+                
+            if (profileError) {
+                console.error("Error creating profile:", profileError);
+                return res.status(500).json({ 
+                    message: "Error creating user profile",
+                    error: profileError 
+                });
+            }
+            
+            // Create default personal program for the user
+            const { data: programData, error: programError } = await supabaseAdmin
+                .from('programs')
+                .insert({
+                    title: "Personal Tasks",
+                    description: "Your personal recurring tasks",
+                    creator_id: userId,
+                    category: "Personal",
+                    image_url: '/public/assets/default-personal-program.jpg',
+                    is_public: false,
+                    is_personal: true
+                })
+                .select()
+                .single();
+            
+            if (programError) {
+                console.error("Error creating personal program:", programError);
+                // Continue even if program creation fails - we can handle this later
+            }
+            
+            // Create subscription to the personal program
+            if (programData) {
+                const { error: subscriptionError } = await supabaseAdmin
+                    .from('subscriptions')
+                    .insert({
+                        user_id: userId,
+                        program_id: programData.id,
+                        created_at: new Date().toISOString()
+                    });
+                    
+                if (subscriptionError) {
+                    console.error("Error creating subscription:", subscriptionError);
+                }
+            }
+            
+            // Ensure storage buckets exist
+            await initializeStorageBuckets();
+            
+            return res.status(201).json({ 
+                message: "User registered successfully. Please check your email to confirm your account." 
+            });
+        }
         
-        // Add subscription to user
-        savedUser.subscriptions.push(personalSubscription._id);
-        await savedUser.save();
-        
-        res.status(201).json(savedUser);
+        res.status(201).json({ message: "Registration successful" });
     } catch (error) {
-        res.status(500).json({ message: "Something went wrong.", error: error });
+        console.error("Registration error:", error);
+        res.status(500).json({ message: "Something went wrong.", error: error.message });
     }
 };
 
-/* LOGIN */
+/**
+ * Login user using Supabase Auth
+ */
 export const login = async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await User.findOne({ email: email });
-
-        if (!user) return res.status(404).json({ message: "User doesn't exist." });
         
-        // Client is now sending SHA-256 hashed password, but our stored passwords use bcrypt
-        // We need to revert to direct bcrypt comparison
-        const isPasswordCorrect = await bcrypt.compare(password, user.password);
-        if (!isPasswordCorrect) return res.status(400).json({ message: "Invalid credentials." });
-
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "12h" });
-        delete user.password;
-        res.status(200).json({ token, user });
+        // Sign in with Supabase Auth
+        const { data, error } = await supabase.auth.signInWithPassword({
+            email,
+            password
+        });
+        
+        if (error) {
+            // Handle specific error cases
+            if (error.message.includes("Invalid login credentials")) {
+                return res.status(400).json({ message: "Invalid credentials." });
+            } else if (error.message.includes("Email not confirmed")) {
+                return res.status(403).json({ message: "Please confirm your email before logging in." });
+            }
+            
+            return res.status(400).json({ message: error.message });
+        }
+        
+        if (!data?.user || !data?.session) {
+            return res.status(400).json({ message: "Login failed." });
+        }
+        
+        // Get user profile data
+        const { data: profileData, error: profileError } = await supabase
+            .from('profiles')
+            .select('*')
+            .eq('id', data.user.id)
+            .single();
+            
+        if (profileError && !profileError.message.includes('No rows found')) {
+            console.error("Error fetching profile:", profileError);
+        }
+        
+        // Format the response similar to the old API for compatibility
+        const responseData = {
+            token: data.session.access_token,
+            user: {
+                id: data.user.id,
+                email: data.user.email,
+                ...profileData
+            }
+        };
+        
+        res.status(200).json(responseData);
     } catch (error) {
+        console.error("Login error:", error);
         res.status(500).json({ message: "Something went wrong." });
     }
 };
 
-/* REQUEST PASSWORD RESET */
+/**
+ * Request password reset using Supabase Auth
+ */
 export const requestPasswordReset = async (req, res) => {
     try {
         const { email } = req.body;
         
-        // Find user by email
-        const user = await User.findOne({ email });
-        if (!user) {
-            return res.status(404).json({ message: "User with this email doesn't exist." });
-        }
-        
-        // Delete any existing reset tokens for this user
-        await ResetToken.deleteMany({ userId: user._id });
-        
-        // Generate new reset token - use a cryptographically secure random string
-        const resetToken = cryptoRandomString({ length: 64, type: 'url-safe' });
-        
-        // Save token to database with 1 hour expiration
-        const newResetToken = new ResetToken({
-            userId: user._id,
-            token: resetToken,
-            createdAt: new Date()
+        // Use Supabase's built-in password reset
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+            redirectTo: `${config.client.url}/reset-password`,
         });
-        await newResetToken.save();
         
-        // Create reset URL
-        const resetUrl = `${process.env.CLIENT_URL || 'http://localhost:3000'}/reset-password/${resetToken}`;
-        
-        // Send email
-        const mailOptions = {
-            from: process.env.EMAIL_USER,
-            to: user.email,
-            subject: 'Password Reset',
-            html: `
-                <h1>Password Reset Request</h1>
-                <p>You requested a password reset.</p>
-                <p>Click the link below to reset your password:</p>
-                <a href="${resetUrl}">${resetUrl}</a>
-                <p>This link will expire in 1 hour.</p>
-                <p>If you didn't request this, please ignore this email.</p>
-            `
-        };
-        
-        await transporter.sendMail(mailOptions);
+        if (error) {
+            return res.status(400).json({ message: error.message });
+        }
         
         res.status(200).json({ message: "Password reset link sent to your email." });
     } catch (error) {
@@ -147,38 +196,21 @@ export const requestPasswordReset = async (req, res) => {
     }
 };
 
-/* RESET PASSWORD */
+/**
+ * Reset password using Supabase Auth
+ */
 export const resetPassword = async (req, res) => {
     try {
-        const { token, password } = req.body;
+        const { password } = req.body;
         
-        // Find valid reset token
-        const resetToken = await ResetToken.findOne({ token });
-        if (!resetToken) {
-            return res.status(400).json({ message: "Invalid or expired reset token." });
+        // Update password
+        const { error } = await supabase.auth.updateUser({
+            password
+        });
+        
+        if (error) {
+            return res.status(400).json({ message: error.message });
         }
-        
-        // Check if token has expired (redundant with MongoDB TTL but adds extra security)
-        const tokenCreationTime = resetToken.createdAt.getTime();
-        const hourInMilliseconds = 60 * 60 * 1000;
-        if (Date.now() > tokenCreationTime + hourInMilliseconds) {
-            // Delete expired token
-            await ResetToken.deleteOne({ _id: resetToken._id });
-            return res.status(400).json({ message: "Reset token has expired. Please request a new one." });
-        }
-        
-        // Hash new password
-        const salt = await bcrypt.genSalt();
-        const passwordHash = await bcrypt.hash(password, salt);
-        
-        // Update user password
-        await User.findByIdAndUpdate(
-            resetToken.userId,
-            { password: passwordHash }
-        );
-        
-        // Delete used reset token to ensure one-time use
-        await ResetToken.deleteOne({ _id: resetToken._id });
         
         res.status(200).json({ message: "Password reset successful." });
     } catch (error) {
@@ -186,3 +218,43 @@ export const resetPassword = async (req, res) => {
         res.status(500).json({ message: "Failed to reset password." });
     }
 };
+
+/**
+ * Logout user from all devices
+ */
+export const logout = async (req, res) => {
+    try {
+        // Get the auth token from the Authorization header
+        let token = req.header("Authorization");
+        
+        if (!token) {
+            return res.status(403).json({ message: "You need to login." });
+        }
+        
+        if (token.startsWith("Bearer ")) {
+            token = token.slice(7, token.length).trimLeft();
+        }
+
+        // Sign out from all devices
+        const { error } = await supabase.auth.signOut({
+            scope: 'global'
+        });
+        
+        if (error) {
+            return res.status(400).json({ message: error.message });
+        }
+        
+        res.status(200).json({ message: "Logged out successfully." });
+    } catch (error) {
+        console.error("Logout error:", error);
+        res.status(500).json({ message: "Failed to logout." });
+    }
+};
+
+export default {
+    register,
+    login,
+    requestPasswordReset,
+    resetPassword,
+    logout
+}; 

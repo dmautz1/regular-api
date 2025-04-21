@@ -1,54 +1,88 @@
-import Activity from '../models/activity.js';
-import Program from '../models/program.js';
-import Subscription from '../models/subscription.js';
-import User from '../models/user.js';
-import Creator from '../models/creator.js';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { saveFile, getFileUrl } from '../utils/fileUpload.js';
-import { manageFutureTasks } from './tasks.js';
-
-// Get file path for __dirname equivalent in ES modules
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+import { supabase } from '../utils/db.js';
+import { v4 as uuidv4 } from 'uuid';
+import { formatErrorResponse } from '../utils/formatResponse.js';
+import { createClient } from '@supabase/supabase-js';
+import config from '../config/config.js';
 
 /* CREATE */
 export const createProgram = async (req, res) => {
     try {
-        const { title, description, category, link, isPrivate } = req.body;
+        const { title, description, isPrivate, isPersonal } = req.body;
+        const userId = req.user.id;
+        const file = req.file;
         
-        if (!req.file) {
-            return res.status(400).json({ message: "Program image is required" });
-        }
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
         
-        // Define the path for remote storage
-        const remotePath = `programs/${req.file.filename}`;
-        
-        // Save the file to the appropriate storage (local or remote)
-        const filePath = await saveFile(req.file, '/public/assets/programs', remotePath);
-        
-        // Get the file URL
-        const imagePath = getFileUrl(req.file.filename, remotePath);
-        
-        const newProgram = new Program({
-            creator: req.user.id,
-            title: title,
-            description: description,
-            category: category,
-            image: {
-                path: imagePath,
-                filename: req.file.filename
-            },
-            link: link,
-            isPrivate: isPrivate
-        });
-        await newProgram.save();
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
 
-        res.status(201).json(newProgram);
+        if (!file) {
+            return res.status(400).json(formatErrorResponse('Image is required'));
+        }
+
+        // Upload image to Supabase Storage
+        const fileExt = file.originalname.split('.').pop();
+        const fileName = `${uuidv4()}.${fileExt}`;
+        const filePath = `program-images/${fileName}`;
+
+        const { error: uploadError } = await userSupabase.storage
+            .from('media')
+            .upload(filePath, file.buffer, {
+                contentType: file.mimetype,
+            });
+
+        if (uploadError) {
+            console.error('Error uploading file:', uploadError);
+            return res.status(500).json(formatErrorResponse('Error uploading image'));
+        }
+
+        // Get the public URL for the uploaded image
+        const { data: { publicUrl } } = userSupabase.storage
+            .from('media')
+            .getPublicUrl(filePath);
+
+        // Create program record in the database
+        const { data: program, error } = await userSupabase
+            .from('programs')
+            .insert({
+                creator_id: userId,
+                title,
+                description,
+                image_url: publicUrl,
+                is_private: isPrivate === 'true',
+                is_personal: isPersonal === 'true',
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+                is_deleted: false
+            })
+            .select('*')
+            .single();
+
+        if (error) {
+            console.error('Error creating program:', error);
+            return res.status(500).json(formatErrorResponse('Error creating program'));
+        }
+
+        return res.status(201).json({ program });
     } catch (error) {
-        console.log(error);
-        res.status(500).json({ message: error.message });
+        console.error('Error in createProgram:', error);
+        return res.status(500).json(formatErrorResponse('Internal server error'));
     }
 };
 
@@ -56,57 +90,171 @@ export const createProgram = async (req, res) => {
 export const getProgram = async (req, res) => {
     try {
         const { programId } = req.params;
-        const program = await Program.findById(programId)
-            .populate({
-                path: "creator",
-                select: "_id email name bio avatarUrl"
-            })
-            .populate("activities")
-            .lean();
-            
-        if (!program) {
-            return res.status(404).json({ message: "Program not found" });
-        }
+        const userId = req.user.id;
         
-        // Check if user is subscribed to this program
-        await Subscription.findOne({ user: req.user.id, program: programId }).then((subscription) => {
-            if (subscription) {
-                program.isSubscribed = true;
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
             }
-            else {
-                program.isSubscribed = false;
+        );
+
+        // Get program with creator data
+        const { data: program, error } = await userSupabase
+            .from('programs')
+            .select(`
+                *,
+                creator:creator_id (
+                    id,
+                    email,
+                    first_name,
+                    last_name,
+                    avatar_url
+                )
+            `)
+            .eq('id', programId)
+            .eq('is_deleted', false)
+            .single();
+
+        if (error) {
+            console.error('Error fetching program:', error);
+            return res.status(404).json(formatErrorResponse('Program not found'));
+        }
+
+        // Check if user has access to this program
+        if (program.is_private && program.creator_id !== userId) {
+            const { data: subscription } = await userSupabase
+                .from('subscriptions')
+                .select('*')
+                .eq('program_id', programId)
+                .eq('user_id', userId)
+                .single();
+
+            if (!subscription) {
+                return res.status(403).json(formatErrorResponse('You do not have access to this program'));
+            }
+        }
+
+        // Get activities for this program
+        const { data: activities, error: activitiesError } = await userSupabase
+            .from('activities')
+            .select('*')
+            .eq('program_id', programId)
+            .eq('is_deleted', false);
+
+        if (activitiesError) {
+            console.error('Error fetching activities:', activitiesError);
+        } else {
+            console.log('Fetched activities for program:', programId, activities);
+        }
+
+        // Check if user is subscribed to this program
+        const { data: userSubscription } = await userSupabase
+            .from('subscriptions')
+            .select('*')
+            .eq('program_id', programId)
+            .eq('user_id', userId)
+            .single();
+
+        // Count subscribers
+        const { count: subscriberCount } = await userSupabase
+            .from('subscriptions')
+            .select('*', { count: 'exact', head: true })
+            .eq('program_id', programId);
+
+        return res.status(200).json({
+            program: {
+                ...program,
+                isSubscribed: !!userSubscription,
+                subscriberCount: subscriberCount || 0,
+                activities: activities || []
             }
         });
-        
-        // Get subscription count
-        const subscriberCount = await Subscription.countDocuments({ program: programId });
-        program.subscriberCount = subscriberCount;
-        
-        res.status(200).json(program);
     } catch (error) {
-        res.status(500).json({ message: error.message });
+        console.error('Error in getProgram:', error);
+        return res.status(500).json(formatErrorResponse('Internal server error'));
     }
 };
 
 export const getFeedPrograms = async (req, res) => {
     try {
-        const programs = await Program.find({ 
-            isPersonal: { $ne: true } // Exclude personal programs
-        })
-            .populate({
-                path: "creator",
-                select: "_id email name bio avatarUrl"
-            })
-            .lean();
-            
-        // Add subscriber count to each program
+        const userId = req.user.id;
+        
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+
+        const { data: programs, error } = await userSupabase
+            .from('programs')
+            .select(`
+                *,
+                creator:creator_id (
+                    id,
+                    email,
+                    first_name,
+                    last_name,
+                    avatar_url
+                )
+            `)
+            .eq('is_deleted', false)
+            .eq('is_personal', false)
+            .eq('is_public', true)
+            .order('created_at', { ascending: false });
+
+        if (error) {
+            console.error('Error fetching feed programs:', error);
+            return res.status(500).json(formatErrorResponse('Error fetching programs'));
+        }
+
+        // Get subscription counts for each program
         for (const program of programs) {
-            const subscriberCount = await Subscription.countDocuments({ program: program._id });
-            program.subscriberCount = subscriberCount;
+            const { count, error: countError } = await userSupabase
+                .from('subscriptions')
+                .select('id', { count: 'exact', head: true })
+                .eq('program_id', program.id);
+                
+            if (countError) {
+                console.error(`Error counting subscribers for program ${program.id}:`, countError);
+                program.subscriberCount = 0;
+            } else {
+                program.subscriberCount = count || 0;
+            }
         }
         
         res.status(200).json(programs);
     } catch (error) {
+        console.error("Error fetching programs:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -114,39 +262,79 @@ export const getFeedPrograms = async (req, res) => {
 export const getUserPrograms = async (req, res) => {
     try {
         const userId = req.user.id;
-        const user = await User.findById(userId)
-            .populate({
-                path: 'subscriptions', 
-                populate: { 
-                    path: 'program', 
-                    match: { isPersonal: { $ne: true } }, // Exclude personal programs
-                    populate: { 
-                        path: 'creator',
-                        select: "_id email name bio avatarUrl"
-                    } 
-                } 
-            });
         
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
         
-        // Filter out null programs (from the match condition)
-        const filteredSubscriptions = user.subscriptions.filter(sub => sub.program);
-        
-        // Convert programs to plain JavaScript objects
-        const programs = filteredSubscriptions.map(subscription => 
-            subscription.program.toObject ? subscription.program.toObject() : subscription.program
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
         );
         
-        // Add subscriber count to each program
+        // Get all subscriptions for the user, joining with programs and creators
+        const { data: subscriptions, error } = await userSupabase
+            .from('subscriptions')
+            .select(`
+                id,
+                program:program_id (
+                    *,
+                    creator:creator_id (
+                        id,
+                        email,
+                        username,
+                        first_name,
+                        last_name,
+                        avatar_url,
+                        bio
+                    )
+                )
+            `)
+            .eq('user_id', userId);
+            
+        if (error) {
+            console.error("Error fetching subscriptions:", error);
+            return res.status(400).json({ message: error.message });
+        }
+        
+        // Filter out personal programs and extract program objects
+        const programs = subscriptions
+            .filter(sub => sub.program && !sub.program.is_personal)
+            .map(sub => ({
+                ...sub.program,
+                id: sub.program.id
+            }));
+            
+        // Get subscription counts for each program
         for (const program of programs) {
-            const subscriberCount = await Subscription.countDocuments({ program: program._id });
-            program.subscriberCount = subscriberCount;
+            const { count, error: countError } = await userSupabase
+                .from('subscriptions')
+                .select('id', { count: 'exact', head: true })
+                .eq('program_id', program.id);
+                
+            if (countError) {
+                console.error(`Error counting subscribers for program ${program.id}:`, countError);
+                program.subscriberCount = 0;
+            } else {
+                program.subscriberCount = count || 0;
+            }
         }
         
         res.status(200).json(programs);
     } catch (error) {
+        console.error("Error fetching user programs:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -156,19 +344,60 @@ export const getCreatorPrograms = async (req, res) => {
     try {
         const userId = req.user.id;
         
-        // Get programs where the creator is the current user
-        const programs = await Program.find({ creator: userId })
-            .populate("activities")
-            .lean();
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
+        // Get all programs created by this user
+        const { data: programs, error } = await userSupabase
+            .from('programs')
+            .select(`
+                *,
+                activities (*)
+            `)
+            .eq('creator_id', userId)
+            .eq('is_deleted', false);
             
-        // Add subscriber count to each program
+        if (error) {
+            console.error("Error fetching creator programs:", error);
+            return res.status(400).json({ message: error.message });
+        }
+        
+        // Get subscription counts for each program
         for (const program of programs) {
-            const subscriberCount = await Subscription.countDocuments({ program: program._id });
-            program.subscriberCount = subscriberCount;
+            const { count, error: countError } = await userSupabase
+                .from('subscriptions')
+                .select('id', { count: 'exact', head: true })
+                .eq('program_id', program.id);
+                
+            if (countError) {
+                console.error(`Error counting subscribers for program ${program.id}:`, countError);
+                program.subscriberCount = 0;
+            } else {
+                program.subscriberCount = count || 0;
+            }
         }
         
         res.status(200).json(programs);
     } catch (error) {
+        console.error("Error fetching creator programs:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -178,47 +407,85 @@ export const getPersonalProgram = async (req, res) => {
     try {
         const userId = req.user.id;
         
-        // Get the personal program for this user
-        const personalProgram = await Program.findOne({ 
-            creator: userId,
-            isPersonal: true 
-        }).populate("activities");
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
         
-        if (!personalProgram) {
-            // If no personal program exists, create one
-            const newPersonalProgram = new Program({
-                creator: userId,
-                title: "Personal Tasks",
-                description: "Your personal recurring tasks",
-                category: "Personal",
-                image: {
-                    path: '/public/assets/default-personal-program.jpg',
-                    filename: 'default-personal-program.jpg'
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
                 },
-                link: "",
-                isPrivate: true,
-                isPersonal: true
-            });
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
+        // Get the personal program for this user
+        const { data: personalProgram, error } = await userSupabase
+            .from('programs')
+            .select(`
+                *,
+                activities (*)
+            `)
+            .eq('creator_id', userId)
+            .eq('is_personal', true)
+            .maybeSingle();
             
-            await newPersonalProgram.save();
+        if (error) {
+            console.error("Error fetching personal program:", error);
+            return res.status(400).json({ message: error.message });
+        }
+        
+        // If no personal program exists, create one
+        if (!personalProgram) {
+            const { data: newProgram, error: createError } = await userSupabase
+                .from('programs')
+                .insert({
+                    creator_id: userId,
+                    title: "Personal Tasks",
+                    description: "Your personal recurring tasks",
+                    category: "Personal",
+                    image_url: '/public/assets/default-personal-program.jpg',
+                    is_public: false,
+                    is_personal: true,
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                })
+                .select()
+                .single();
+                
+            if (createError) {
+                console.error("Error creating personal program:", createError);
+                return res.status(400).json({ message: createError.message });
+            }
             
             // Create subscription to the personal program
-            const personalSubscription = new Subscription({
-                user: userId,
-                program: newPersonalProgram._id
-            });
-            await personalSubscription.save();
+            const { error: subError } = await userSupabase
+                .from('subscriptions')
+                .insert({
+                    user_id: userId,
+                    program_id: newProgram.id,
+                    created_at: new Date().toISOString()
+                });
+                
+            if (subError) {
+                console.error("Error creating subscription to personal program:", subError);
+            }
             
-            // Add subscription to user
-            const user = await User.findById(userId);
-            user.subscriptions.push(personalSubscription._id);
-            await user.save();
-            
-            return res.status(200).json(newPersonalProgram);
+            return res.status(201).json(newProgram);
         }
         
         res.status(200).json(personalProgram);
     } catch (error) {
+        console.error("Error fetching personal program:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -227,123 +494,234 @@ export const getPersonalProgram = async (req, res) => {
 export const editProgram = async (req, res) => {
     try {
         const { programId, title, description, category, link, isPrivate } = req.body;
+        const userId = req.user.id;
         
-        // Check if program exists
-        const program = await Program.findById(programId);
-        if (!program) {
-            return res.status(404).json({ message: "Program not found" });
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
+        // Check if program exists and belongs to the current user
+        const { data: program, error: fetchError } = await userSupabase
+            .from('programs')
+            .select('*')
+            .eq('id', programId)
+            .eq('creator_id', userId)
+            .single();
+            
+        if (fetchError) {
+            console.error("Error fetching program:", fetchError);
+            if (fetchError.code === 'PGRST116') {
+                return res.status(404).json({ message: "Program not found or not authorized" });
+            }
+            return res.status(400).json({ message: fetchError.message });
         }
         
-        // Check if user is the creator of the program
-        if (program.creator.toString() !== req.user.id) {
-            return res.status(403).json({ message: "You can only edit your own programs" });
-        }
-        
-        const file = req.file;
+        // Prepare update data
         const updateData = {
-            title: title,
-            description: description,
-            category: category,
-            link: link,
-            isPrivate: isPrivate
+            title: title || program.title,
+            description: description !== undefined ? description : program.description,
+            category: category || program.category,
+            is_public: isPrivate !== undefined ? !isPrivate : program.is_public,
+            updated_at: new Date().toISOString()
         };
         
-        // If a new image was uploaded
-        if (file) {
-            // Define the path for remote storage
-            const remotePath = `programs/${file.filename}`;
-            
-            // Save the file to the appropriate storage (local or remote)
-            const filePath = await saveFile(file, '/public/assets/programs', remotePath);
-            
-            // Get the file URL
-            const imagePath = getFileUrl(file.filename, remotePath);
-            
-            updateData.image = {
-                path: imagePath,
-                filename: file.filename
-            };
+        // If a new image was uploaded, save it
+        if (req.file) {
+            const imageUrl = await uploadFile(req.file, 'programs');
+            updateData.image_url = imageUrl;
         }
         
         // Update the program
-        const updatedProgram = await Program.findByIdAndUpdate(programId, updateData, { new: true });
+        const { data: updatedProgram, error: updateError } = await userSupabase
+            .from('programs')
+            .update(updateData)
+            .eq('id', programId)
+            .select()
+            .single();
+            
+        if (updateError) {
+            console.error("Error updating program:", updateError);
+            return res.status(400).json({ message: updateError.message });
+        }
         
         res.status(200).json(updatedProgram);
     } catch (error) {
-        console.log(error);
+        console.error("Error updating program:", error);
         res.status(500).json({ message: error.message });
     }
 };
 
-// After the editProgram function, add the missing deleteProgram function
 export const deleteProgram = async (req, res) => {
     try {
         const { id } = req.params;
+        const userId = req.user.id;
         
-        // Find the program first to get the image path
-        const program = await Program.findById(id);
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
         
-        if (!program) {
-            return res.status(404).json({ message: "Program not found" });
-        }
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
         
-        // Check if user is the creator of the program
-        if (program.creator.toString() !== req.user.id) {
-            return res.status(403).json({ message: "You can only delete your own programs" });
+        // Check if program exists and belongs to the current user
+        const { data: program, error: fetchError } = await userSupabase
+            .from('programs')
+            .select('*')
+            .eq('id', id)
+            .eq('creator_id', userId)
+            .single();
+            
+        if (fetchError) {
+            console.error("Error fetching program:", fetchError);
+            if (fetchError.code === 'PGRST116') {
+                return res.status(404).json({ message: "Program not found or not authorized" });
+            }
+            return res.status(400).json({ message: fetchError.message });
         }
         
         // Don't allow deleting personal programs
-        if (program.isPersonal) {
+        if (program.is_personal) {
             return res.status(403).json({ message: "Cannot delete personal program" });
         }
         
-        // Delete the program
-        const result = await Program.deleteOne({ _id: id });
-
-        res.status(200).json(result);
+        // Delete the program (mark as deleted rather than actual deletion)
+        const { data, error: deleteError } = await userSupabase
+            .from('programs')
+            .update({ 
+                is_deleted: true,
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', id);
+            
+        if (deleteError) {
+            console.error("Error deleting program:", deleteError);
+            return res.status(400).json({ message: deleteError.message });
+        }
+        
+        res.status(200).json({ success: true });
     } catch (error) {
-        console.error(error);
+        console.error("Error deleting program:", error);
         res.status(500).json({ message: error.message });
     }
 };
 
-// Then add the subscribeProgram and unsubscribeProgram functions
 export const subscribeProgram = async (req, res) => {
     try {
         const { programId } = req.params;
         const userId = req.user.id;
-
+        
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
         // Check if already subscribed
-        const existingSubscription = await Subscription.findOne({ user: userId, program: programId });
-        if (existingSubscription) {
+        const { data: existingSub, error: checkError } = await userSupabase
+            .from('subscriptions')
+            .select('*')
+            .eq('user_id', userId)
+            .eq('program_id', programId)
+            .single();
+            
+        if (checkError) {
+            // If the error is not "not found", return the error
+            if (checkError.code !== 'PGRST116') {
+                console.error("Error checking subscription:", checkError);
+                return res.status(400).json({ message: checkError.message });
+            }
+        } else if (existingSub) {
             return res.status(400).json({ message: "Already subscribed to this program" });
         }
-
-        const newSubscription = new Subscription({
-            user: userId,
-            program: programId
-        });
         
-        await newSubscription.save().then(newSubscription => 
-            newSubscription.populate({
-                path: 'program', 
-                populate: { 
-                    path: 'creator',
-                    select: "_id email name bio avatarUrl"
-                }
+        // Create new subscription
+        const { data: newSubscription, error: createError } = await userSupabase
+            .from('subscriptions')
+            .insert({
+                user_id: userId,
+                program_id: programId,
+                created_at: new Date().toISOString()
             })
-        );
-
-        const user = await User.findById(userId);
-        user.subscriptions.push(newSubscription._id);
-        await user.save();
+            .select()
+            .single();
+            
+        if (createError) {
+            console.error("Error creating subscription:", createError);
+            return res.status(400).json({ message: createError.message });
+        }
         
-        // Populate future tasks for this program
-        await manageFutureTasks(userId, programId, true);
+        // Fetch program details
+        const { data: program, error: programError } = await userSupabase
+            .from('programs')
+            .select(`
+                *,
+                creator:creator_id (
+                    id,
+                    email,
+                    username,
+                    first_name,
+                    last_name,
+                    avatar_url,
+                    bio
+                )
+            `)
+            .eq('id', programId)
+            .single();
+            
+        if (programError) {
+            console.error("Error fetching program:", programError);
+            return res.status(400).json({ message: programError.message });
+        }
         
-        res.status(201).json(newSubscription.program);
+        res.status(201).json(program);
     } catch (error) {
-        console.log(error);
+        console.error("Error subscribing to program:", error);
         res.status(500).json({ message: error.message });
     }
 };
@@ -352,26 +730,100 @@ export const unsubscribeProgram = async (req, res) => {
     try {
         const { programId } = req.params;
         const userId = req.user.id;
-
+        
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        
+        // Create a new Supabase client with the user's token
+        const userSupabase = createClient(
+            config.supabase.url,
+            config.supabase.anonKey,
+            {
+                auth: {
+                    autoRefreshToken: false,
+                    persistSession: false,
+                    detectSessionInUrl: false
+                },
+                global: {
+                    headers: {
+                        Authorization: `Bearer ${token}`
+                    }
+                }
+            }
+        );
+        
         // Find the subscription
-        const subscription = await Subscription.findOne({ user: userId, program: programId });
+        const { data: subscription, error: findError } = await userSupabase
+            .from('subscriptions')
+            .select('id')
+            .eq('user_id', userId)
+            .eq('program_id', programId)
+            .maybeSingle();
+            
+        if (findError) {
+            console.error("Error finding subscription:", findError);
+            return res.status(400).json({ message: findError.message });
+        }
+        
         if (!subscription) {
             return res.status(404).json({ message: "Subscription not found" });
         }
-
-        // Find the user and remove the subscription from their list
-        const user = await User.findById(userId);
-        user.subscriptions = user.subscriptions.filter(s => !s.equals(subscription._id));
-        await user.save();
-
-        // Remove subscription
-        await Subscription.findByIdAndDelete(subscription._id);
         
-        // Handle tasks for this program - mark future tasks as deleted
-        await manageFutureTasks(userId, programId, false);
+        // Get all activities for this program
+        const { data: activities, error: activitiesError } = await userSupabase
+            .from('activities')
+            .select('id')
+            .eq('program_id', programId)
+            .eq('is_deleted', false);
+            
+        if (activitiesError) {
+            console.error("Error fetching program activities:", activitiesError);
+            return res.status(400).json({ message: activitiesError.message });
+        }
+        
+        // Delete all future tasks associated with these activities
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        const { error: deleteError } = await userSupabase
+            .from('tasks')
+            .delete()
+            .eq('user_id', userId)
+            .in('activity_id', activities.map(a => a.id))
+            .gte('due_date', today.toISOString().split('T')[0]);
+            
+        if (deleteError) {
+            console.error("Error deleting tasks:", deleteError);
+            return res.status(400).json({ message: deleteError.message });
+        }
+        
+        // Delete the subscription
+        const { error: subDeleteError } = await userSupabase
+            .from('subscriptions')
+            .delete()
+            .eq('id', subscription.id);
+            
+        if (subDeleteError) {
+            console.error("Error deleting subscription:", subDeleteError);
+            return res.status(400).json({ message: subDeleteError.message });
+        }
         
         res.status(200).json({ message: "Unsubscribed successfully" });
     } catch (error) {
+        console.error("Error unsubscribing from program:", error);
         res.status(500).json({ message: error.message });
     }
 };
+
+export default {
+    createProgram,
+    getProgram,
+    getFeedPrograms,
+    getUserPrograms,
+    getCreatorPrograms,
+    getPersonalProgram,
+    editProgram,
+    deleteProgram,
+    subscribeProgram,
+    unsubscribeProgram
+}; 

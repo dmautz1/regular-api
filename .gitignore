@@ -62,6 +62,7 @@ Thumbs.db
 *.swo
 
 # Misc
+backup/
 .directory
 .fuse_hidden*
 .Trash-*
