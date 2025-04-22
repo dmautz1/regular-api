@@ -55,6 +55,8 @@ const corsOptions = {
   origin: [
     'https://localhost:3000',
     'http://localhost:3000', 
+    'https://app.stayregular.io',
+    'https://api.stayregular.io',
     config.client.url
   ],
   credentials: true,
