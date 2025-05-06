@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     due_date DATE,
     is_completed BOOLEAN DEFAULT FALSE,
     is_deleted BOOLEAN DEFAULT FALSE,
+    is_sticky BOOLEAN DEFAULT FALSE,
     completed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()

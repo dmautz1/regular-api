@@ -310,8 +310,8 @@ export const getUserPrograms = async (req, res) => {
         }
         
         // Filter out personal programs and extract program objects
+        //    .filter(sub => sub.program && !sub.program.is_personal) 
         const programs = subscriptions
-            .filter(sub => sub.program && !sub.program.is_personal)
             .map(sub => ({
                 ...sub.program,
                 id: sub.program.id
@@ -751,6 +751,23 @@ export const unsubscribeProgram = async (req, res) => {
                 }
             }
         );
+        
+        // Get the program to check if it's personal
+        const { data: program, error: programError } = await userSupabase
+            .from('programs')
+            .select('is_personal')
+            .eq('id', programId)
+            .single();
+            
+        if (programError) {
+            console.error("Error fetching program:", programError);
+            return res.status(400).json({ message: programError.message });
+        }
+        
+        // Prevent unsubscribing from personal programs
+        if (program.is_personal) {
+            return res.status(403).json({ message: "Cannot unsubscribe from personal program" });
+        }
         
         // Find the subscription
         const { data: subscription, error: findError } = await userSupabase

@@ -107,7 +107,8 @@ export const createTaskSchema = {
     tags: Joi.array().items(Joi.string()),
     userId: Joi.string(),
     isRecurring: Joi.boolean().default(false),
-    recurringDays: Joi.array().items(Joi.number().min(0).max(6)).allow(null)
+    recurringDays: Joi.array().items(Joi.number().min(0).max(6)).allow(null),
+    isSticky: Joi.boolean().default(false)
   })
 };
 
@@ -128,7 +129,13 @@ export const updateTaskSchema = {
     priority: Joi.string().valid('low', 'medium', 'high'),
     category: Joi.string().allow(''),
     tags: Joi.array().items(Joi.string()),
-    isDeleted: Joi.boolean()
+    isDeleted: Joi.boolean(),
+    isSticky: Joi.boolean(),
+    isEditingRecurrence: Joi.boolean(),
+    recurringDays: Joi.object().pattern(
+      Joi.string().pattern(/^[0-6]$/),
+      Joi.boolean()
+    )
   })
 };
 

@@ -1,5 +1,5 @@
 import express from "express";
-import { getFeedTasks, populateUserTasks, getUserTasks, createTask, completeTask, deleteTask } from "../controllers/tasks.js";
+import { getFeedTasks, populateUserTasks, getUserTasks, createTask, completeTask, deleteTask, updateTask } from "../controllers/tasks.js";
 import { verifyToken } from "../middleware/auth.js";
 import { validateRequest, createTaskSchema, updateTaskSchema } from "../middleware/validation.js";
 
@@ -14,6 +14,8 @@ router.post("/populate", verifyToken, populateUserTasks);
 router.patch("/:id/complete", verifyToken, validateRequest({
   params: updateTaskSchema.params
 }), completeTask);
+
+router.patch("/:id/update", verifyToken, validateRequest(updateTaskSchema), updateTask);
 
 router.delete("/:id/delete", verifyToken, validateRequest({
   params: updateTaskSchema.params

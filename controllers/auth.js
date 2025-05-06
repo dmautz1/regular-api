@@ -71,7 +71,7 @@ export const register = async (req, res) => {
             const { data: programData, error: programError } = await supabaseAdmin
                 .from('programs')
                 .insert({
-                    title: "Personal Tasks",
+                    title: "My Recurring Tasks",
                     description: "Your personal recurring tasks",
                     creator_id: userId,
                     category: "Personal",
