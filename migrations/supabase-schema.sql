@@ -182,6 +182,50 @@ CREATE TABLE IF NOT EXISTS activity_logs (
 -- Enable RLS on activity_logs
 ALTER TABLE activity_logs ENABLE ROW LEVEL SECURITY;
 
+-- Create settings table
+CREATE TABLE IF NOT EXISTS settings (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    timezone TEXT NOT NULL DEFAULT 'UTC',
+    default_page TEXT NOT NULL DEFAULT 'dashboard',
+    color_mode TEXT NOT NULL DEFAULT 'light',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id)
+);
+
+-- Enable RLS
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
+
+-- Create policies
+CREATE POLICY "Users can view their own settings"
+    ON settings FOR SELECT
+    USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert their own settings"
+    ON settings FOR INSERT
+    WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own settings"
+    ON settings FOR UPDATE
+    USING (auth.uid() = user_id)
+    WITH CHECK (auth.uid() = user_id);
+
+-- Create function to handle updated_at
+CREATE OR REPLACE FUNCTION handle_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Create trigger for updated_at
+CREATE TRIGGER settings_updated_at
+    BEFORE UPDATE ON settings
+    FOR EACH ROW
+    EXECUTE FUNCTION handle_updated_at(); 
+
 -- RLS Policies for activity_logs
 CREATE POLICY "Users can view their own activity logs" ON activity_logs
     FOR SELECT USING (auth.uid() = user_id);

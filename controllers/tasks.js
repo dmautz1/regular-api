@@ -366,33 +366,43 @@ export const populateUserTasks = async (req, res) => {
             }
         );
 
-        // First, move incomplete sticky tasks from previous days to the current day
-        const { data: incompleteStickyTasks, error: stickyError } = await userSupabase
-            .from('tasks')
-            .select('*')
-            .eq('user_id', userId)
-            .eq('is_sticky', true)
-            .eq('is_completed', false)
-            .lt('due_date', day); // Only get tasks from previous days
+        // Check if the target day is in the future
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const targetDate = new Date(day);
+        targetDate.setHours(0, 0, 0, 0);
+        const isFutureDay = targetDate > today;
 
-        if (stickyError) {
-            console.error("Error fetching sticky tasks:", stickyError);
-            return res.status(400).json({ message: stickyError.message });
-        }
-
-        // Update due dates for incomplete sticky tasks
-        for (const task of incompleteStickyTasks) {
-            const { error: updateError } = await userSupabase
+        // Only move incomplete sticky tasks if the target day is not in the future
+        if (!isFutureDay) {
+            // First, move incomplete sticky tasks from previous days to the current day
+            const { data: incompleteStickyTasks, error: stickyError } = await userSupabase
                 .from('tasks')
-                .update({ 
-                    due_date: day,
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', task.id);
+                .select('*')
+                .eq('user_id', userId)
+                .eq('is_sticky', true)
+                .eq('is_completed', false)
+                .lt('due_date', day); // Only get tasks from previous days
 
-            if (updateError) {
-                console.error("Error updating sticky task:", updateError);
-                continue;
+            if (stickyError) {
+                console.error("Error fetching sticky tasks:", stickyError);
+                return res.status(400).json({ message: stickyError.message });
+            }
+
+            // Update due dates for incomplete sticky tasks
+            for (const task of incompleteStickyTasks) {
+                const { error: updateError } = await userSupabase
+                    .from('tasks')
+                    .update({ 
+                        due_date: day,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq('id', task.id);
+
+                if (updateError) {
+                    console.error("Error updating sticky task:", updateError);
+                    continue;
+                }
             }
         }
 
@@ -420,9 +430,6 @@ export const populateUserTasks = async (req, res) => {
             console.error("Error fetching subscriptions:", subError);
             return res.status(400).json({ message: subError.message });
         }
-        
-        // Convert date string to Date object for cron comparison
-        const targetDate = new Date(day);
         
         // Collect all activities from subscribed programs
         const allActivities = [];

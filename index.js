@@ -13,6 +13,7 @@ import userRoutes from "./routes/users.js";
 import taskRoutes from "./routes/tasks.js";
 import programRoutes from "./routes/programs.js";
 import activityRoutes from "./routes/activities.js";
+import settingsRoutes from './routes/settings.js';
 import { register } from "./controllers/auth.js";
 import { verifyToken } from "./middleware/auth.js";
 import { verifyRecaptcha } from "./middleware/recaptcha.js";
@@ -153,6 +154,7 @@ app.use("/users", csrfProtection, verifyToken, userRoutes);
 app.use("/tasks", csrfProtection, verifyToken, taskRoutes);
 app.use("/programs", csrfProtection, verifyToken, programRoutes);
 app.use("/activities", csrfProtection, verifyToken, activityRoutes);
+app.use("/settings", csrfProtection, verifyToken, settingsRoutes);
 
 /* ERROR HANDLING MIDDLEWARE */
 app.use((err, req, res, next) => {

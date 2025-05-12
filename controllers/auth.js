@@ -67,6 +67,26 @@ export const register = async (req, res) => {
                 });
             }
             
+            // Create default settings for the user
+            const { error: settingsError } = await supabaseAdmin
+                .from('settings')
+                .insert({
+                    user_id: userId,
+                    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+                    default_page: 'dashboard',
+                    color_mode: 'light',
+                    created_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString()
+                });
+
+            if (settingsError) {
+                console.error("Error creating user settings:", settingsError);
+                return res.status(500).json({ 
+                    message: "Error creating user settings",
+                    error: settingsError 
+                });
+            }
+            
             // Create default personal program for the user
             const { data: programData, error: programError } = await supabaseAdmin
                 .from('programs')
