@@ -5,14 +5,13 @@ import { formatErrorResponse } from '../utils/formatResponse.js';
 export const createActivity = async (req, res) => {
     try {
         const { programId, activities } = req.body;
-        const userId = req.user.id;
         
         if (!programId) {
-            return res.status(400).json(formatErrorResponse('Program ID is required'));
+            return res.status(400).json({ message: "Program ID is required" });
         }
         
         if (!activities || !Array.isArray(activities) || activities.length === 0) {
-            return res.status(400).json(formatErrorResponse('At least one activity is required'));
+            return res.status(400).json({ message: "At least one activity is required" });
         }
         
         console.log(`Creating ${activities.length} activities for program ${programId}`);
@@ -21,36 +20,52 @@ export const createActivity = async (req, res) => {
         const token = req.header("Authorization").replace("Bearer ", "");
         const userSupabase = createAuthenticatedClient(token);
         
-        // First verify the user owns this program
+        // Check if program exists and user has access
         const { data: program, error: programError } = await userSupabase
             .from('programs')
             .select('*')
             .eq('id', programId)
-            .eq('creator_id', userId)
             .single();
             
         if (programError) {
             console.error('Error fetching program:', programError);
-            return res.status(404).json(formatErrorResponse('Program not found or you do not have permission'));
+            return res.status(404).json({ message: "Program not found" });
         }
         
-        // Process all activities to create or update
+        // Verify user has access to the program
+        if (program.creator_id !== req.user.id) {
+            return res.status(403).json({ message: "Not authorized to modify this program" });
+        }
+        
         const activitiesWithData = [];
         
         for (const activity of activities) {
             if (!activity.title) {
-                return res.status(400).json(formatErrorResponse('Activity title is required'));
+                return res.status(400).json({ message: "Activity title is required" });
             }
             
-            if (!activity.cron) {
-                return res.status(400).json(formatErrorResponse('Activity cron expression is required'));
+            // If recurringDays is provided, convert it to a cron expression
+            let cronExpression = activity.cron;
+            if (activity.recurringDays) {
+                const selectedDays = Object.entries(activity.recurringDays)
+                    .filter(([_, isSelected]) => isSelected)
+                    .map(([day]) => day)
+                    .join(',');
+                    
+                if (selectedDays) {
+                    cronExpression = `0 9 * * ${selectedDays}`; // 9 AM on selected days
+                }
+            }
+            
+            if (!cronExpression) {
+                return res.status(400).json({ message: "Activity cron expression is required" });
             }
             
             const activityData = {
                 program_id: programId,
                 title: activity.title,
                 description: activity.description || '',
-                cron: activity.cron,
+                cron: cronExpression,
                 is_deleted: false,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString()
@@ -74,7 +89,7 @@ export const createActivity = async (req, res) => {
             
         if (saveError) {
             console.error('Error saving activities:', saveError);
-            return res.status(500).json(formatErrorResponse('Error saving activities'));
+            return res.status(500).json({ message: "Error saving activities" });
         }
         
         // Generate future tasks for this program (if it's a personal program)
@@ -92,17 +107,16 @@ export const createActivity = async (req, res) => {
             
         if (fetchError) {
             console.error('Error fetching activities:', fetchError);
-            // Don't fail the request, just return what we have
+            return res.status(500).json({ message: "Error fetching activities" });
         }
         
-        // Return the program with activities
-        return res.status(201).json({
-            ...program,
-            activities: allActivities || []
+        res.status(200).json({
+            message: "Activities created successfully",
+            activities: allActivities
         });
     } catch (error) {
-        console.error('Error creating activities:', error);
-        return res.status(500).json(formatErrorResponse('Internal server error'));
+        console.error('Error in createActivity:', error);
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 

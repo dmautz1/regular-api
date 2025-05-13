@@ -232,7 +232,11 @@ export const activitySchema = {
       cron: Joi.string().required().messages({
         'any.required': 'Cron expression is required'
       }),
-      position: Joi.number().integer().min(0) // Optional for ordering
+      position: Joi.number().integer().min(0), // Optional for ordering
+      recurringDays: Joi.object().pattern(
+        Joi.string().pattern(/^[0-6]$/),
+        Joi.boolean()
+      ).allow(null)
     })).required().messages({
       'any.required': 'At least one activity is required'
     })
