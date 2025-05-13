@@ -1,4 +1,4 @@
-import { supabase } from '../utils/db.js';
+import { supabase, createAuthenticatedClient } from '../utils/db.js';
 import { formatErrorResponse } from '../utils/formatResponse.js';
 import { createClient } from '@supabase/supabase-js';
 import config from '../config/config.js';
@@ -16,24 +16,7 @@ export const createTask = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
 
         if (isRecurring && recurringDays && recurringDays.length > 0) {
             // For recurring tasks, we need to create an activity in the user's personal program
@@ -120,24 +103,7 @@ export const getFeedTasks = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Find tasks for this user on this day from Supabase
         const { data: tasks, error } = await userSupabase
@@ -182,8 +148,12 @@ export const getUserTasks = async (req, res) => {
             return res.status(403).json({ message: "Not authorized to view these tasks" });
         }
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // Get tasks from Supabase
-        const { data: tasks, error } = await supabase
+        const { data: tasks, error } = await userSupabase
             .from('tasks')
             .select('*')
             .eq('user_id', userId)
@@ -216,24 +186,7 @@ export const completeTask = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // First check if the task exists and belongs to the user
         const { data: task, error: fetchError } = await userSupabase
@@ -281,8 +234,12 @@ export const deleteTask = async (req, res) => {
         const { id } = req.params;
         const userId = req.user.id;
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // First check if the task exists and belongs to the user
-        const { data: task, error: fetchError } = await supabase
+        const { data: task, error: fetchError } = await userSupabase
             .from('tasks')
             .select('*')
             .eq('id', id)
@@ -298,7 +255,7 @@ export const deleteTask = async (req, res) => {
         
         if (task.activity_id) {
             // If the task is from a program activity, mark it as deleted instead of removing it
-            const { data: updatedTask, error: updateError } = await supabase
+            const { data: updatedTask, error: updateError } = await userSupabase
                 .from('tasks')
                 .update({ 
                     is_deleted: true,
@@ -316,7 +273,7 @@ export const deleteTask = async (req, res) => {
             res.status(200).json({ deletedCount: 1, task: updatedTask });
         } else {
             // For regular tasks, actually delete them from the database
-            const { error: deleteError } = await supabase
+            const { error: deleteError } = await userSupabase
                 .from('tasks')
                 .delete()
                 .eq('id', id);
@@ -539,24 +496,7 @@ export const updateTask = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // First check if the task exists and belongs to the user
         const { data: task, error: fetchError } = await userSupabase

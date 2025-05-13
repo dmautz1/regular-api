@@ -1,8 +1,6 @@
-import { supabase } from '../utils/db.js';
+import { supabase, createAuthenticatedClient } from '../utils/db.js';
 import { v4 as uuidv4 } from 'uuid';
 import { formatErrorResponse } from '../utils/formatResponse.js';
-import { createClient } from '@supabase/supabase-js';
-import config from '../config/config.js';
 
 /* CREATE */
 export const createProgram = async (req, res) => {
@@ -13,24 +11,7 @@ export const createProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
 
         if (!file) {
             return res.status(400).json(formatErrorResponse('Image is required'));
@@ -94,24 +75,7 @@ export const getProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
 
         // Get program with creator data
         const { data: program, error } = await userSupabase
@@ -196,24 +160,7 @@ export const getFeedPrograms = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
 
         const { data: programs, error } = await userSupabase
             .from('programs')
@@ -265,24 +212,7 @@ export const getUserPrograms = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Get all subscriptions for the user, joining with programs and creators
         const { data: subscriptions, error } = await userSupabase
@@ -346,24 +276,7 @@ export const getCreatorPrograms = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Get all programs created by this user
         const { data: programs, error } = await userSupabase
@@ -409,24 +322,7 @@ export const getPersonalProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Get the personal program for this user
         const { data: personalProgram, error } = await userSupabase
@@ -498,24 +394,7 @@ export const editProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Check if program exists and belongs to the current user
         const { data: program, error: fetchError } = await userSupabase
@@ -575,24 +454,7 @@ export const deleteProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Check if program exists and belongs to the current user
         const { data: program, error: fetchError } = await userSupabase
@@ -643,24 +505,7 @@ export const subscribeProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Check if already subscribed
         const { data: existingSub, error: checkError } = await userSupabase
@@ -733,24 +578,7 @@ export const unsubscribeProgram = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Get the program to check if it's personal
         const { data: program, error: programError } = await userSupabase

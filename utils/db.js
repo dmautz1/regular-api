@@ -43,6 +43,30 @@ export const supabaseAdmin = createClient(
   }
 );
 
+/**
+ * Creates an authenticated Supabase client with the user's token
+ * @param {string} token - The user's JWT token
+ * @returns {Object} An authenticated Supabase client
+ */
+export const createAuthenticatedClient = (token) => {
+  return createClient(
+    config.supabase.url,
+    config.supabase.anonKey,
+    {
+      auth: {
+        autoRefreshToken: false,
+        persistSession: false,
+        detectSessionInUrl: false
+      },
+      global: {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    }
+  );
+};
+
 export default {
   supabase,
   supabaseAdmin

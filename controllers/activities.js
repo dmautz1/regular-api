@@ -1,4 +1,4 @@
-import { supabase } from '../utils/db.js';
+import { supabase, createAuthenticatedClient } from '../utils/db.js';
 import { formatErrorResponse } from '../utils/formatResponse.js';
 
 /* CREATE */
@@ -17,8 +17,12 @@ export const createActivity = async (req, res) => {
         
         console.log(`Creating ${activities.length} activities for program ${programId}`);
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // First verify the user owns this program
-        const { data: program, error: programError } = await supabase
+        const { data: program, error: programError } = await userSupabase
             .from('programs')
             .select('*')
             .eq('id', programId)
@@ -61,7 +65,7 @@ export const createActivity = async (req, res) => {
         }
         
         // Insert or update activities
-        const { data: savedActivities, error: saveError } = await supabase
+        const { data: savedActivities, error: saveError } = await userSupabase
             .from('activities')
             .upsert(activitiesWithData, { 
                 onConflict: 'id',
@@ -80,7 +84,7 @@ export const createActivity = async (req, res) => {
         }
         
         // Get all activities for the program
-        const { data: allActivities, error: fetchError } = await supabase
+        const { data: allActivities, error: fetchError } = await userSupabase
             .from('activities')
             .select('*')
             .eq('program_id', programId)
@@ -108,8 +112,12 @@ export const getActivity = async (req, res) => {
         const { activityId } = req.params;
         const userId = req.user.id;
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // Get the activity
-        const { data: activity, error } = await supabase
+        const { data: activity, error } = await userSupabase
             .from('activities')
             .select(`
                 *,
@@ -127,7 +135,7 @@ export const getActivity = async (req, res) => {
         // Check if user has access to this activity's program
         if (activity.program.creator_id !== userId && activity.program.is_private) {
             // Check if user is subscribed to the program
-            const { data: subscription, error: subError } = await supabase
+            const { data: subscription, error: subError } = await userSupabase
                 .from('subscriptions')
                 .select('*')
                 .eq('user_id', userId)
@@ -155,8 +163,12 @@ export const getProgramActivities = async (req, res) => {
             return res.status(400).json(formatErrorResponse('Program ID is required'));
         }
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // Check if user has access to this program
-        const { data: program, error: programError } = await supabase
+        const { data: program, error: programError } = await userSupabase
             .from('programs')
             .select('*')
             .eq('id', programId)
@@ -170,7 +182,7 @@ export const getProgramActivities = async (req, res) => {
         
         if (program.creator_id !== userId && program.is_private) {
             // Check if user is subscribed to the program
-            const { data: subscription, error: subError } = await supabase
+            const { data: subscription, error: subError } = await userSupabase
                 .from('subscriptions')
                 .select('*')
                 .eq('user_id', userId)
@@ -183,7 +195,7 @@ export const getProgramActivities = async (req, res) => {
         }
         
         // Get activities for this program
-        const { data: activities, error } = await supabase
+        const { data: activities, error } = await userSupabase
             .from('activities')
             .select('*')
             .eq('program_id', programId)
@@ -208,8 +220,12 @@ export const editActivity = async (req, res) => {
         const { title, description, cron } = req.body;
         const userId = req.user.id;
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // Get the activity with its program info
-        const { data: activity, error: fetchError } = await supabase
+        const { data: activity, error: fetchError } = await userSupabase
             .from('activities')
             .select(`
                 *,
@@ -230,7 +246,7 @@ export const editActivity = async (req, res) => {
         }
         
         // Update the activity
-        const { data: updatedActivity, error: updateError } = await supabase
+        const { data: updatedActivity, error: updateError } = await userSupabase
             .from('activities')
             .update({
                 title: title || activity.title,
@@ -259,8 +275,12 @@ export const deleteActivity = async (req, res) => {
         const { activityId } = req.params;
         const userId = req.user.id;
         
+        // Get the user's JWT token from the Authorization header
+        const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
+        
         // Get the activity with its program info
-        const { data: activity, error: fetchError } = await supabase
+        const { data: activity, error: fetchError } = await userSupabase
             .from('activities')
             .select(`
                 *,
@@ -281,7 +301,7 @@ export const deleteActivity = async (req, res) => {
         }
         
         // Soft delete the activity
-        const { data, error: deleteError } = await supabase
+        const { data, error: deleteError } = await userSupabase
             .from('activities')
             .update({
                 is_deleted: true,

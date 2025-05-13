@@ -1,7 +1,5 @@
-import { supabase } from '../utils/db.js';
+import { supabase, createAuthenticatedClient } from '../utils/db.js';
 import { formatErrorResponse } from '../utils/formatResponse.js';
-import { createClient } from '@supabase/supabase-js';
-import config from '../config/config.js';
 
 /**
  * Get user settings
@@ -12,61 +10,24 @@ export const getUserSettings = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
         
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
-
-        // Get user settings
+        // Get user settings from Supabase
         const { data: settings, error } = await userSupabase
             .from('settings')
             .select('*')
             .eq('user_id', userId)
             .single();
-
+            
         if (error) {
-            if (error.code === 'PGRST116') {
-                // Settings not found, create default settings
-                const { data: newSettings, error: createError } = await userSupabase
-                    .from('settings')
-                    .insert([
-                        {
-                            user_id: userId,
-                            timezone: 'UTC',
-                            default_page: 'dashboard',
-                            color_mode: 'light'
-                        }
-                    ])
-                    .select()
-                    .single();
-
-                if (createError) {
-                    throw createError;
-                }
-
-                return res.status(200).json(newSettings);
-            }
-            throw error;
+            console.error('Error fetching settings:', error);
+            return res.status(404).json(formatErrorResponse('Settings not found'));
         }
-
+        
         res.status(200).json(settings);
     } catch (error) {
-        console.error('Error fetching settings:', error);
-        res.status(500).json(formatErrorResponse('Failed to fetch settings'));
+        console.error('Error in getUserSettings:', error);
+        res.status(500).json(formatErrorResponse('Internal server error'));
     }
 };
 
@@ -80,44 +41,34 @@ export const updateUserSettings = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
         
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
-
-        // Update settings
+        // Update user settings in Supabase
         const { data: settings, error } = await userSupabase
             .from('settings')
             .update({
-                timezone: timezone,
-                default_page: default_page,
-                color_mode: color_mode
+                timezone: timezone || 'UTC',
+                default_page: default_page || 'dashboard',
+                color_mode: color_mode || 'light',
+                updated_at: new Date().toISOString()
             })
             .eq('user_id', userId)
             .select()
             .single();
-
+            
         if (error) {
-            throw error;
+            console.error('Error updating settings:', error);
+            return res.status(400).json(formatErrorResponse('Error updating settings'));
         }
-
+        
         res.status(200).json(settings);
     } catch (error) {
-        console.error('Error updating settings:', error);
-        res.status(500).json(formatErrorResponse('Failed to update settings'));
+        console.error('Error in updateUserSettings:', error);
+        res.status(500).json(formatErrorResponse('Internal server error'));
     }
+};
+
+export default {
+    getUserSettings,
+    updateUserSettings
 }; 

@@ -1,8 +1,6 @@
-import { supabase } from '../utils/db.js';
+import { supabase, createAuthenticatedClient } from '../utils/db.js';
 import { formatErrorResponse } from '../utils/formatResponse.js';
 import { v4 as uuidv4 } from 'uuid';
-import { createClient } from '@supabase/supabase-js';
-import config from '../config/config.js';
 
 /* GET PROFILE */
 export const getProfile = async (req, res) => {
@@ -11,24 +9,7 @@ export const getProfile = async (req, res) => {
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
-        
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Get user profile from Supabase
         const { data: profile, error } = await userSupabase
@@ -48,14 +29,24 @@ export const getProfile = async (req, res) => {
             .select('*', { count: 'exact', head: true })
             .eq('user_id', userId);
             
-        // Get program counts
-        const { count: programCount, error: programError } = await userSupabase
+        if (subError) {
+            console.error('Error counting subscriptions:', subError);
+            return res.status(500).json(formatErrorResponse('Error fetching subscription count'));
+        }
+        
+        // Get program count
+        const { count: programCount, error: progError } = await userSupabase
             .from('programs')
             .select('*', { count: 'exact', head: true })
             .eq('creator_id', userId)
             .eq('is_personal', false)
             .eq('is_deleted', false);
             
+        if (progError) {
+            console.error('Error counting programs:', progError);
+            return res.status(500).json(formatErrorResponse('Error fetching program count'));
+        }
+        
         // Format the response to match what the frontend expects
         return res.status(200).json({
             name: `${profile.first_name} ${profile.last_name}`.trim(),
@@ -75,121 +66,72 @@ export const getProfile = async (req, res) => {
 export const updateProfile = async (req, res) => {
     try {
         const userId = req.user.id;
-        console.log('Updating profile for user:', userId);
+        const { name, bio } = req.body;
+        const file = req.file;
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
+        const userSupabase = createAuthenticatedClient(token);
         
-        // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const firstName = name.split(' ')[0] || '';
+        const lastName = name.split(' ')[1] || '';
         
-        // First check if profile exists
-        const { data: existingProfile, error: fetchError } = await userSupabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .single();
-            
-        if (fetchError) {
-            console.error('Error fetching profile:', fetchError);
-            return res.status(404).json(formatErrorResponse('Profile not found'));
-        }
-        
-        console.log('Existing profile:', existingProfile);
-        
-        const { name, bio } = req.body;
-        
-        // Prepare update data
+        // Update profile data
         const updateData = {
+            first_name: firstName,
+            last_name: lastName,
+            bio: bio,
             updated_at: new Date().toISOString()
         };
         
-        // Split name into first and last name if provided
-        if (name !== undefined) {
-            const nameParts = name.trim().split(' ');
-            updateData.first_name = nameParts[0] || '';
-            updateData.last_name = nameParts.slice(1).join(' ') || '';
-        }
-        
-        if (bio !== undefined) updateData.bio = bio;
-        
-        // Update avatar if provided
-        if (req.file) {
-            // Upload avatar to Supabase Storage
-            const fileExt = req.file.originalname.split('.').pop();
+        // If there's a new avatar, upload it
+        if (file) {
+            const fileExt = file.originalname.split('.').pop();
             const fileName = `${uuidv4()}.${fileExt}`;
             const filePath = `avatars/${fileName}`;
             
             const { error: uploadError } = await userSupabase.storage
                 .from('avatars')
-                .upload(filePath, req.file.buffer, {
-                    contentType: req.file.mimetype,
+                .upload(filePath, file.buffer, {
+                    contentType: file.mimetype,
+                    upsert: true
                 });
                 
             if (uploadError) {
                 console.error('Error uploading avatar:', uploadError);
-                return res.status(500).json(formatErrorResponse('Error uploading avatar'));
+                return res.status(400).json(formatErrorResponse('Error uploading avatar'));
             }
             
-            // Get public URL for avatar
+            // Get the public URL
             const { data: { publicUrl } } = userSupabase.storage
                 .from('avatars')
                 .getPublicUrl(filePath);
                 
-            // Update profile with new avatar URL
             updateData.avatar_url = publicUrl;
         }
         
-        console.log('Update data:', updateData);
-        
-        // First update the profile
-        const { error: updateError } = await userSupabase
+        // Update the profile
+        const { data: profile, error } = await userSupabase
             .from('profiles')
             .update(updateData)
-            .eq('id', userId);
+            .eq('id', userId)
+            .select()
+            .single();
             
-        if (updateError) {
-            console.error('Error updating profile:', updateError);
+        if (error) {
+            console.error('Error updating profile:', error);
             return res.status(400).json(formatErrorResponse('Error updating profile'));
         }
         
-        // Then fetch the updated profile
-        const { data: updatedProfile, error: selectError } = await userSupabase
-            .from('profiles')
-            .select('*')
-            .eq('id', userId)
-            .single();
-            
-        if (selectError) {
-            console.error('Error fetching updated profile:', selectError);
-            return res.status(400).json(formatErrorResponse('Error fetching updated profile'));
-        }
-        
-        // Format the response to match what the frontend expects
-        return res.status(200).json({
-            name: `${updatedProfile.first_name} ${updatedProfile.last_name}`.trim(),
-            email: updatedProfile.email,
-            bio: updatedProfile.bio || '',
-            avatarUrl: updatedProfile.avatar_url || ''
+        res.status(200).json({
+            name: `${profile.first_name} ${profile.last_name}`.trim(),
+            email: profile.email,
+            bio: profile.bio || '',
+            avatarUrl: profile.avatar_url || ''
         });
     } catch (error) {
         console.error('Error in updateProfile:', error);
-        return res.status(500).json(formatErrorResponse('Internal server error'));
+        res.status(500).json(formatErrorResponse('Internal server error'));
     }
 };
 
@@ -202,22 +144,7 @@ export const getUserStats = async (req, res) => {
         const token = req.header("Authorization").replace("Bearer ", "");
         
         // Create a new Supabase client with the user's token
-        const userSupabase = createClient(
-            config.supabase.url,
-            config.supabase.anonKey,
-            {
-                auth: {
-                    autoRefreshToken: false,
-                    persistSession: false,
-                    detectSessionInUrl: false
-                },
-                global: {
-                    headers: {
-                        Authorization: `Bearer ${token}`
-                    }
-                }
-            }
-        );
+        const userSupabase = createAuthenticatedClient(token);
         
         // Get today's date and first/last day of week
         const today = new Date();

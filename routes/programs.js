@@ -54,10 +54,10 @@ router.get('/:programId', verifyToken, programsController.getProgram);
 
 /* UPDATE */
 // Edit a program
-router.patch('/', verifyToken, upload.single('image'), programsController.editProgram);
+router.patch('/:programId', verifyToken, upload.single('image'), programsController.editProgram);
 
 // Delete a program
-router.delete('/:id', verifyToken, programsController.deleteProgram);
+router.delete('/:programId', verifyToken, programsController.deleteProgram);
 
 /* SUBSCRIBE/UNSUBSCRIBE */
 // Subscribe to a program
