@@ -49,7 +49,6 @@ export const register = async (req, res) => {
                 .insert({
                     id: userId,
                     email: email,
-                    username: email.split('@')[0],
                     first_name: '',
                     last_name: '',
                     bio: '',

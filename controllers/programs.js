@@ -224,7 +224,6 @@ export const getUserPrograms = async (req, res) => {
                     creator:creator_id (
                         id,
                         email,
-                        username,
                         first_name,
                         last_name,
                         avatar_url,
@@ -549,7 +548,6 @@ export const subscribeProgram = async (req, res) => {
                 creator:creator_id (
                     id,
                     email,
-                    username,
                     first_name,
                     last_name,
                     avatar_url,
