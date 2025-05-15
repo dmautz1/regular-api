@@ -1,7 +1,7 @@
 import axios from 'axios';
 
 /**
- * Middleware to verify Google reCAPTCHA token
+ * Middleware to verify Google reCAPTCHA v3 token
  * @param {Object} req - Express request object
  * @param {Object} res - Express response object
  * @param {Function} next - Express next function
@@ -44,12 +44,29 @@ export const verifyRecaptcha = async (req, res, next) => {
       });
     }
 
-    // If verification score is too low, reject the request
-    if (recaptchaResponse.data.score && recaptchaResponse.data.score < 0.5) {
-      console.log('reCAPTCHA score too low:', recaptchaResponse.data.score);
+    // For reCAPTCHA v3, we check the score
+    // Score ranges from 0.0 to 1.0, where 1.0 is very likely a good interaction
+    // and 0.0 is very likely a bot
+    const score = recaptchaResponse.data.score;
+    const action = recaptchaResponse.data.action;
+
+    // Log the score and action for monitoring
+    console.log(`reCAPTCHA score: ${score}, action: ${action}`);
+
+    // Different thresholds for different actions
+    const thresholds = {
+      login: 0.5,
+      register: 0.6,
+      forgot_password: 0.5
+    };
+
+    const threshold = thresholds[action] || 0.5;
+
+    if (score < threshold) {
+      console.log(`reCAPTCHA score too low for action ${action}: ${score}`);
       return res.status(400).json({
         status: 400,
-        message: 'Bot activity detected. Please try again later.'
+        message: 'Suspicious activity detected. Please try again later.'
       });
     }
 
