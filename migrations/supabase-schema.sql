@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT DEFAULT 'pending',
     priority TEXT DEFAULT 'medium',
     due_date DATE,
+    due_time TIME,
     is_completed BOOLEAN DEFAULT FALSE,
     is_deleted BOOLEAN DEFAULT FALSE,
     is_sticky BOOLEAN DEFAULT FALSE,
@@ -166,6 +167,10 @@ CREATE POLICY "Users can view programs they are subscribed to" ON programs
             AND subscriptions.user_id = auth.uid()
         )
     );
+
+-- Allow users to view subscription counts for all programs
+CREATE POLICY "Users can view subscription counts for all programs" ON subscriptions
+    FOR SELECT USING (true);
 
 -- Activity tracking table (for user activity logging)
 CREATE TABLE IF NOT EXISTS activity_logs (

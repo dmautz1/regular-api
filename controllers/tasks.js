@@ -6,13 +6,13 @@ import config from '../config/config.js';
 /* CREATE */
 export const createTask = async (req, res) => {
     try {
-        const { title, description, dueDate, priority = 'medium', isRecurring, recurringDays, isSticky } = req.body;
+        const { title, description, dueDate, dueTime, priority = 'medium', isRecurring, recurringDays, isSticky } = req.body;
         
         if (!title) {
             return res.status(400).json(formatErrorResponse("Task title is required"));
         }
         
-        console.log(`Creating task "${title}" for user ${req.user.id} due on ${dueDate}`);
+        console.log(`Creating task "${title}" for user ${req.user.id} due on ${dueDate} at ${dueTime}`);
         
         // Get the user's JWT token from the Authorization header
         const token = req.header("Authorization").replace("Bearer ", "");
@@ -36,7 +36,8 @@ export const createTask = async (req, res) => {
             // Create cron expression from selected days
             // Format: "0 12 * * 1,3,5" for noon on Monday, Wednesday, Friday
             const days = recurringDays.join(',');
-            const cronExpression = `0 12 * * ${days}`;
+            const time = dueTime === '' || dueTime === null ? null : dueTime.split(':');
+            const cronExpression = time ? `${time[1]} ${time[0]} * * ${days}` : `* * * * ${days}`;
 
             // Create the activity
             const { data: activity, error: activityError } = await userSupabase
@@ -68,6 +69,7 @@ export const createTask = async (req, res) => {
                     description: description || '',
                     user_id: req.user.id,
                     due_date: dueDate,
+                    due_time: dueTime,
                     is_completed: false,
                     is_sticky: isSticky || false,
                     priority: priority,
@@ -444,6 +446,8 @@ export const populateUserTasks = async (req, res) => {
             // Only create task if it doesn't exist or isn't deleted
             if (existingTasks.length === 0) {
                 // Upsert task for this activity
+                const cronSplit = activity.cron.split(' ');
+                const time = cronSplit[0] === '*' ? null : cronSplit[1] + ':' + cronSplit[0] + ':00';
                 const { data: newTask, error: upsertError } = await userSupabase
                     .from('tasks')
                     .upsert({
@@ -454,6 +458,7 @@ export const populateUserTasks = async (req, res) => {
                         title: activity.title,
                         description: activity.description || '',
                         due_date: day,
+                        due_time: time,
                         is_completed: existingTasks.length > 0 ? existingTasks[0].is_completed : false,
                         is_deleted: false,
                         updated_at: new Date().toISOString()
@@ -485,7 +490,7 @@ export const populateUserTasks = async (req, res) => {
 export const updateTask = async (req, res) => {
     try {
         const { id } = req.params;
-        const { title, description, dueDate, isSticky, isRecurring, recurringDays, isEditingRecurrence } = req.body;
+        const { title, description, dueDate, dueTime, isSticky, isRecurring, recurringDays, isEditingRecurrence } = req.body;
         const userId = req.user.id;
         
         if (!id) {
@@ -533,7 +538,8 @@ export const updateTask = async (req, res) => {
                 .filter(([_, isSelected]) => isSelected)
                 .map(([day]) => day)
                 .join(',');
-            const cronExpression = `0 12 * * ${days}`;
+            const time = dueTime === '' || dueTime === null ? null : dueTime.split(':');
+            const cronExpression = time ? `${time[1]} ${time[0]} * * ${days}` : `* * * * ${days}`;
 
             // Update the activity
             const { error: activityError } = await userSupabase
@@ -584,6 +590,7 @@ export const updateTask = async (req, res) => {
                     .update({ 
                         title: title || task.title,
                         description: description || task.description,
+                        due_time: dueTime === '' || dueTime === null ? null : dueTime,
                         is_sticky: isSticky !== undefined ? isSticky : task.is_sticky,
                         updated_at: new Date().toISOString()
                     })
@@ -616,6 +623,7 @@ export const updateTask = async (req, res) => {
                 title: title || task.title,
                 description: description || task.description,
                 due_date: dueDate || task.due_date,
+                due_time: dueTime === '' || dueTime === null ? null : dueTime,
                 is_sticky: isSticky !== undefined ? isSticky : task.is_sticky,
                 updated_at: new Date().toISOString()
             })

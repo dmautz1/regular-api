@@ -94,7 +94,7 @@ export const register = async (req, res) => {
                     description: "Your personal recurring tasks",
                     creator_id: userId,
                     category: "Personal",
-                    image_url: '/public/assets/default-personal-program.jpg',
+                    image_url: '/assets/default-personal-program.jpg',
                     is_public: false,
                     is_personal: true
                 })

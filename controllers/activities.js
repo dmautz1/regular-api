@@ -276,6 +276,21 @@ export const editActivity = async (req, res) => {
             console.error('Error updating activity:', updateError);
             return res.status(500).json(formatErrorResponse('Error updating activity'));
         }
+
+        // Mark all future tasks from this activity as deleted
+        const { error: taskUpdateError } = await userSupabase
+            .from('tasks')
+            .update({ 
+                is_deleted: true,
+                updated_at: new Date().toISOString()
+            })
+            .eq('activity_id', activityId)
+            .gte('due_date', new Date().toISOString().split('T')[0]);
+            
+        if (taskUpdateError) {
+            console.error('Error updating tasks:', taskUpdateError);
+            // Don't fail the request, just log the error
+        }
         
         return res.status(200).json(updatedActivity);
     } catch (error) {
@@ -326,6 +341,21 @@ export const deleteActivity = async (req, res) => {
         if (deleteError) {
             console.error('Error deleting activity:', deleteError);
             return res.status(500).json(formatErrorResponse('Error deleting activity'));
+        }
+
+        // Mark all future tasks from this activity as deleted
+        const { error: taskUpdateError } = await userSupabase
+            .from('tasks')
+            .update({ 
+                is_deleted: true,
+                updated_at: new Date().toISOString()
+            })
+            .eq('activity_id', activityId)
+            .gte('due_date', new Date().toISOString().split('T')[0]);
+            
+        if (taskUpdateError) {
+            console.error('Error updating tasks:', taskUpdateError);
+            // Don't fail the request, just log the error
         }
         
         return res.status(200).json({ success: true });
