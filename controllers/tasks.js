@@ -379,7 +379,8 @@ export const populateUserTasks = async (req, res) => {
                         program_id,
                         title,
                         description,
-                        cron
+                        cron,
+                        is_deleted
                     )
                 )
             `)
@@ -394,7 +395,9 @@ export const populateUserTasks = async (req, res) => {
         const allActivities = [];
         for (const subscription of subscriptions) {
             if (subscription.program && subscription.program.activities) {
-                allActivities.push(...subscription.program.activities);
+                // Filter out deleted activities
+                const nonDeletedActivities = subscription.program.activities.filter(activity => !activity.is_deleted);
+                allActivities.push(...nonDeletedActivities);
             }
         }
         
