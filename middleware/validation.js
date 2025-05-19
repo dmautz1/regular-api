@@ -234,6 +234,7 @@ export const activitySchema = {
       cron: Joi.string().required().messages({
         'any.required': 'Cron expression is required'
       }),
+      dueTime: Joi.string().pattern(/^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/).allow(null),
       position: Joi.number().integer().min(0), // Optional for ordering
       recurringDays: Joi.object().pattern(
         Joi.string().pattern(/^[0-6]$/),

@@ -84,38 +84,6 @@ app.get('/csrf-token', csrfProtection, (req, res) => {
   res.json({ csrfToken: req.csrfToken() });
 });
 
-/* ENSURE DIRECTORIES EXIST */
-// Create avatars directory if it doesn't exist
-const avatarsDir = path.join(__dirname, "public/assets/avatars");
-if (!fs.existsSync(avatarsDir)) {
-    fs.mkdirSync(avatarsDir, { recursive: true });
-}
-
-// Create programs directory if it doesn't exist
-const programsDir = path.join(__dirname, "public/assets/programs");
-if (!fs.existsSync(programsDir)) {
-    fs.mkdirSync(programsDir, { recursive: true });
-}
-
-/* STATIC FILE SERVING */
-app.use("/public/assets", express.static(path.join(__dirname, "public/assets")));
-app.use("/public/assets/avatars", express.static(path.join(__dirname, "public/assets/avatars")));
-app.use("/public/assets/programs", express.static(path.join(__dirname, "public/assets/programs")));
-
-// Create directory for default program image if it doesn't exist
-const defaultImagePath = path.join(__dirname, "public/assets/default-program.jpg");
-if (!fs.existsSync(defaultImagePath)) {
-    // Copy a default image or create a placeholder
-    try {
-        const defaultAvatarPath = path.join(__dirname, "public/assets/default.png");
-        if (fs.existsSync(defaultAvatarPath)) {
-            fs.copyFileSync(defaultAvatarPath, defaultImagePath);
-        }
-    } catch (error) {
-        console.log("Could not create default program image:", error);
-    }
-}
-
 /* FILE STORAGE */
 const storage = multer.memoryStorage(); // Use memory storage for Supabase uploads
 
@@ -210,11 +178,7 @@ const HTTP_PORT = parseInt(PORT) - 1 || 3000; // HTTP port for redirects
 
 // Function to start the server
 const startServer = async () => {
-  try {
-    // Initialize storage buckets (only if they don't exist)
-    await initializeStorageBuckets(false);
-    console.log('Supabase storage buckets initialized');
-    
+  try {    
     // Use HTTPS only in production
     if (config.isProduction) {
       // SSL Certificate for HTTPS

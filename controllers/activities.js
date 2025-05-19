@@ -44,20 +44,7 @@ export const createActivity = async (req, res) => {
                 return res.status(400).json({ message: "Activity title is required" });
             }
             
-            // If recurringDays is provided, convert it to a cron expression
-            let cronExpression = activity.cron;
-            if (activity.recurringDays) {
-                const selectedDays = Object.entries(activity.recurringDays)
-                    .filter(([_, isSelected]) => isSelected)
-                    .map(([day]) => day)
-                    .join(',');
-                    
-                if (selectedDays) {
-                    cronExpression = `0 9 * * ${selectedDays}`; // 9 AM on selected days
-                }
-            }
-            
-            if (!cronExpression) {
+            if (!activity.cron) {
                 return res.status(400).json({ message: "Activity cron expression is required" });
             }
             
@@ -65,7 +52,7 @@ export const createActivity = async (req, res) => {
                 program_id: programId,
                 title: activity.title,
                 description: activity.description || '',
-                cron: cronExpression,
+                cron: activity.cron,
                 is_deleted: false,
                 created_at: new Date().toISOString(),
                 updated_at: new Date().toISOString()
@@ -85,34 +72,17 @@ export const createActivity = async (req, res) => {
             .upsert(activitiesWithData, { 
                 onConflict: 'id',
                 returning: 'representation'
-            });
+            })
+            .select('*');
             
         if (saveError) {
             console.error('Error saving activities:', saveError);
             return res.status(500).json({ message: "Error saving activities" });
         }
         
-        // Generate future tasks for this program (if it's a personal program)
-        if (program.is_personal) {
-            // This would call your task population logic
-            // Using a separate endpoint for task population is recommended
-        }
-        
-        // Get all activities for the program
-        const { data: allActivities, error: fetchError } = await userSupabase
-            .from('activities')
-            .select('*')
-            .eq('program_id', programId)
-            .eq('is_deleted', false);
-            
-        if (fetchError) {
-            console.error('Error fetching activities:', fetchError);
-            return res.status(500).json({ message: "Error fetching activities" });
-        }
-        
         res.status(200).json({
             message: "Activities created successfully",
-            activities: allActivities
+            activities: savedActivities
         });
     } catch (error) {
         console.error('Error in createActivity:', error);
